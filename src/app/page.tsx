@@ -1,207 +1,317 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
 import { useSession } from "./providers";
+import { SpendAreaChart, ProviderDonut, RankedBars } from "@/components/charts";
+import { PROVIDER_COLORS, PROVIDER_LABELS, LogoMark } from "@/components/ui";
+import { IconZap, IconClock, IconLightbulb } from "@/components/icons";
 
-const FEATURES = [
+/* ── Demo dataset: one coherent story, reused by the preview sections ── */
+
+const PREVIEW_KPI = [
+  { label: "AI spend", value: "$4,182.50", delta: "+12.4%", down: false },
+  { label: "Requests", value: "128,902", delta: "+3.1%", down: false },
+  { label: "Tokens", value: "412M", delta: "+8.9%", down: false },
+  { label: "Avg latency", value: "1.84s", delta: "-6.2%", down: true },
+];
+
+const PREVIEW_PROVIDERS = [
+  { provider: "OPENAI", spendUsd: 1757 },
+  { provider: "ANTHROPIC", spendUsd: 1297 },
+  { provider: "GOOGLE", spendUsd: 753 },
+  { provider: "MISTRAL", spendUsd: 376 },
+];
+
+const PREVIEW_TREND = [
+  78, 92, 85, 110, 96, 71, 88, 104, 118, 101, 94, 123, 132, 118, 109, 141, 135, 128, 149, 142, 156, 138, 131, 160, 171, 154, 166, 178, 169, 182,
+].map((v, i) => {
+  const d = new Date(Date.UTC(2026, 7, 27 + i));
+  return { day: d.toISOString().slice(0, 10), spendUsd: v };
+});
+
+const PREVIEW_MODELS = [
+  { name: "gpt-4o", value: 1840 },
+  { name: "claude-sonnet-4-5", value: 1120 },
+  { name: "claude-opus-4-1", value: 620 },
+  { name: "gemini-2.5-pro", value: 418 },
+  { name: "gemini-2.5-flash", value: 335 },
+  { name: "mistral-large-2", value: 245 },
+];
+
+const CAPABILITIES = [
   {
-    title: "Unified visibility",
-    body: "Connect OpenAI, Anthropic, Google Gemini and Mistral. See every token and every dollar in one dashboard.",
+    kicker: "Cost",
+    title: "Know what every model and workflow costs",
+    body: "Attribute every dollar to a model, team, or application. Cost per request, cost per token, projected spend — computed continuously from provider usage APIs.",
   },
   {
-    title: "Know who spends what",
-    body: "Break down cost by model, team, and time period. Spot the expensive patterns before they become surprises.",
+    kicker: "Performance",
+    title: "Track latency, errors and reliability",
+    body: "Request latency and error rates per model, weighted by your real traffic. Spot degradation before your users do.",
   },
   {
-    title: "Budgets that warn you",
-    body: "Set monthly budgets per org or per team. Get email alerts at 80% and 100% — before the invoice lands.",
+    kicker: "Usage",
+    title: "See who consumes AI — and how much",
+    body: "Token consumption by team, user and application. Input vs output split, tokens per request, and the workflows driving your bill.",
   },
   {
-    title: "Fast, pre-aggregated data",
-    body: "Dashboards read from daily rollup tables, so charts render in well under a second even with millions of events.",
+    kicker: "Optimization",
+    title: "Reduce cost without sacrificing quality",
+    body: "Route suggestions, oversized-context detection, and model comparisons based on your actual usage patterns — not benchmarks.",
   },
 ];
 
-const PRICING = [
-  {
-    name: "Free",
-    price: "$0",
-    period: "forever",
-    features: ["1 provider connection", "1 team member", "30-day data retention", "Overview dashboard"],
-  },
-  {
-    name: "Starter",
-    price: "$29",
-    period: "per month",
-    features: ["3 provider connections", "Up to 5 team members", "6-month retention", "Token & cost analytics"],
-    highlight: true,
-  },
-  {
-    name: "Growth",
-    price: "$149",
-    period: "per month",
-    features: ["Unlimited providers & members", "Budgets & email alerts", "CSV & PDF export", "1-year retention"],
-  },
-];
+const NAV_LINKS = ["Product", "Solutions", "Pricing", "Docs"];
 
 export default function LandingPage() {
   const { me, loading } = useSession();
-  const [mounted, setMounted] = useState(false);
-  useEffect(() => setMounted(true), []);
+  const authed = !loading && !!me;
 
   return (
     <main className="min-h-screen">
-      <header className="sticky top-0 z-40 border-b" style={{ background: "var(--panel)" }}>
-        <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-6">
-          <Link href="/" className="flex items-center gap-2 font-semibold">
-            <Logo /> ObserveMetrics
+      {/* ── Header ── */}
+      <header className="sticky top-0 z-40 border-b" style={{ background: "color-mix(in srgb, var(--surface) 86%, transparent)", backdropFilter: "blur(10px)" }}>
+        <div className="mx-auto flex h-[52px] max-w-[1120px] items-center justify-between px-5">
+          <Link href="/" className="flex items-center gap-2">
+            <LogoMark />
+            <span className="text-[14px] font-semibold tracking-tight">ObserveMetrics</span>
           </Link>
-          <nav className="hidden items-center gap-6 text-sm muted md:flex">
-            <a href="#features">Features</a>
-            <a href="#pricing">Pricing</a>
+          <nav className="hidden items-center gap-1 md:flex">
+            {NAV_LINKS.map((l) => (
+              <a key={l} href={"#" + l.toLowerCase()} className="rounded-md px-2.5 py-1.5 text-[13px] muted transition-colors hover:bg-[var(--surface-2)] hover:text-[var(--text)]">
+                {l}
+              </a>
+            ))}
           </nav>
-          <div className="flex items-center gap-3">
-            {mounted && !loading && me ? (
-              <Link href="/dashboard" className="btn btn-primary">
-                Open dashboard
-              </Link>
+          <div className="flex items-center gap-2">
+            {authed ? (
+              <Link href="/dashboard" className="btn btn-primary btn-sm">Open dashboard</Link>
             ) : (
               <>
-                <Link href="/login" className="btn btn-outline">
-                  Log in
-                </Link>
-                <Link href="/register" className="btn btn-primary">
-                  Start free
-                </Link>
+                <Link href="/login" className="btn btn-ghost btn-sm">Sign in</Link>
+                <Link href="/register" className="btn btn-primary btn-sm">Start free</Link>
               </>
             )}
           </div>
         </div>
       </header>
 
-      {/* Hero */}
-      <section className="mx-auto max-w-6xl px-6 pb-20 pt-24 text-center">
-        <span className="badge">AI cost intelligence for teams</span>
-        <h1 className="mx-auto mt-6 max-w-3xl text-5xl font-bold leading-tight tracking-tight md:text-6xl">
-          Every token. Every dollar.
-          <br />
-          <span style={{ color: "var(--accent)" }}>One dashboard.</span>
-        </h1>
-        <p className="mx-auto mt-6 max-w-2xl text-lg muted">
-          ObserveMetrics gives your team unified visibility into AI spend across OpenAI, Anthropic,
-          Google Gemini and Mistral — by model, by team, over time — with budgets and alerts that keep
-          you on track.
-        </p>
-        <div className="mt-10 flex items-center justify-center gap-4">
-          <Link href="/register" className="btn btn-primary px-6 py-3 text-base">
-            Start free — no credit card
-          </Link>
-          <a href="#features" className="btn btn-outline px-6 py-3 text-base">
-            See how it works
-          </a>
+      {/* ── Hero ── */}
+      <section className="mx-auto max-w-[1120px] px-5 pb-10 pt-14">
+        <div className="mx-auto max-w-[720px] text-center">
+          <span className="label" style={{ color: "var(--accent)" }}>AI usage &amp; cost intelligence</span>
+          <h1 className="mt-3 text-[38px] font-semibold leading-[1.12] tracking-[-0.03em] md:text-[44px]">
+            Know exactly what your AI is costing you.
+            <br />
+            <span style={{ color: "var(--accent)" }}>Then find where to optimize it.</span>
+          </h1>
+          <p className="mx-auto mt-4 max-w-[560px] text-[15px] leading-relaxed muted">
+            ObserveMetrics tracks models, tokens, spend, latency and usage across your entire AI stack — in one place.
+          </p>
+          <div className="mt-6 flex items-center justify-center gap-2.5">
+            <Link href={authed ? "/dashboard" : "/register"} className="btn btn-primary btn-lg">Start free</Link>
+            <a href="#preview" className="btn btn-secondary btn-lg">View demo</a>
+          </div>
         </div>
 
-        {/* Mock dashboard preview */}
-        <div className="panel mx-auto mt-16 max-w-4xl p-6 text-left shadow-2xl">
-          <div className="flex items-center justify-between">
-            <div className="flex gap-2">
-              <span className="h-3 w-3 rounded-full bg-red-400" />
-              <span className="h-3 w-3 rounded-full bg-yellow-400" />
-              <span className="h-3 w-3 rounded-full bg-green-400" />
+        {/* ── Product preview: real UI, real numbers ── */}
+        <div id="preview" className="mx-auto mt-12 max-w-[980px] scroll-mt-20">
+          <div className="surface overflow-hidden" style={{ boxShadow: "0 1px 2px rgba(17,17,17,0.04), 0 12px 40px rgba(17,17,17,0.09)" }}>
+            {/* preview topbar */}
+            <div className="flex items-center justify-between border-b px-4 py-2.5">
+              <div className="flex items-center gap-2.5">
+                <LogoMark size={18} />
+                <span className="text-[12.5px] font-semibold">ObserveMetrics</span>
+                <span className="faint">/</span>
+                <span className="text-[12.5px] muted">Overview</span>
+              </div>
+              <div className="hidden items-center gap-1.5 sm:flex">
+                <span className="badge badge-neutral">Last 30 days</span>
+                <span className="badge badge-neutral">All providers</span>
+              </div>
             </div>
-            <span className="text-xs muted">observemetrics.dev/dashboard</span>
-          </div>
-          <div className="mt-6 grid grid-cols-3 gap-4">
-            {[
-              ["Spend this month", "$4,182.50", "+12.4%"],
-              ["Total requests", "128,902", "+3.1%"],
-              ["Input tokens", "412M", "+8.9%"],
-            ].map(([label, value, delta]) => (
-              <div key={label} className="rounded-lg border p-4">
-                <div className="text-xs muted">{label}</div>
-                <div className="mt-1 text-2xl font-semibold">{value}</div>
-                <div className="mt-1 text-xs" style={{ color: "#f59e0b" }}>
-                  {delta}
+
+            {/* KPI row */}
+            <div className="grid grid-cols-2 gap-px border-b lg:grid-cols-4" style={{ background: "var(--border)" }}>
+              {PREVIEW_KPI.map((k) => (
+                <div key={k.label} className="px-4 py-3" style={{ background: "var(--surface)" }}>
+                  <div className="label">{k.label}</div>
+                  <div className="mt-1 text-[20px] font-bold leading-none tracking-tight tabular-nums">{k.value}</div>
+                  <div className="mt-1.5 text-[11.5px] font-medium" style={{ color: k.down ? "var(--success)" : "var(--warning)" }}>
+                    {k.delta}
+                  </div>
                 </div>
+              ))}
+            </div>
+
+            <div className="grid gap-px lg:grid-cols-3" style={{ background: "var(--border)" }}>
+              {/* spend chart */}
+              <div className="p-4 lg:col-span-2" style={{ background: "var(--surface)" }}>
+                <div className="mb-2 flex items-center justify-between">
+                  <h3 className="text-[13px] font-semibold">AI spend over time</h3>
+                  <div className="segmented">
+                    <button data-active={false}>7D</button>
+                    <button data-active={true}>30D</button>
+                    <button data-active={false}>90D</button>
+                  </div>
+                </div>
+                <SpendAreaChart data={PREVIEW_TREND} height={190} />
               </div>
-            ))}
+              {/* provider donut */}
+              <div className="p-4" style={{ background: "var(--surface)" }}>
+                <h3 className="mb-2 text-[13px] font-semibold">Spend by provider</h3>
+                <ProviderDonut data={PREVIEW_PROVIDERS} height={150} />
+              </div>
+            </div>
           </div>
-          <div className="mt-4 rounded-lg border p-6">
-            <div className="mb-4 h-32 w-full rounded-md" style={{ background: "linear-gradient(90deg, rgba(99,102,241,0.5), rgba(139,92,246,0.25), rgba(99,102,241,0.5))" }} />
-            <div className="flex gap-3">
-              <div className="h-2 w-1/3 rounded" style={{ background: "var(--accent)", opacity: 0.7 }} />
-              <div className="h-2 w-1/4 rounded" style={{ background: "var(--accent)", opacity: 0.4 }} />
-              <div className="h-2 w-1/5 rounded" style={{ background: "var(--accent)", opacity: 0.25 }} />
+          <p className="mt-3 text-center text-xs faint">Live product view — your data, every provider, one place.</p>
+        </div>
+      </section>
+
+      {/* ── Section: where spend goes ── */}
+      <section id="product" className="border-t py-16">
+        <div className="mx-auto max-w-[1120px] px-5">
+          <div className="max-w-[560px]">
+            <span className="label">Visibility</span>
+            <h2 className="mt-2 text-[26px] font-semibold tracking-tight">See where your AI spend is going.</h2>
+            <p className="mt-2 text-[14.5px] leading-relaxed muted">
+              Every request is broken down by provider, model, team and day — so the invoice is never a surprise.
+            </p>
+          </div>
+          <div className="mt-8 grid gap-4 lg:grid-cols-3">
+            <div className="surface p-4 lg:col-span-2">
+              <div className="mb-3 flex items-center justify-between">
+                <h3 className="text-[13px] font-semibold">Daily spend by period</h3>
+                <span className="badge badge-neutral">Rolling 30 days</span>
+              </div>
+              <SpendAreaChart data={PREVIEW_TREND} height={210} />
+            </div>
+            <div className="surface p-4">
+              <h3 className="mb-3 text-[13px] font-semibold">By provider</h3>
+              <ProviderDonut data={PREVIEW_PROVIDERS} height={140} />
+            </div>
+          </div>
+          <div className="mt-4 grid gap-4 lg:grid-cols-2">
+            <div className="surface p-4">
+              <h3 className="mb-3 text-[13px] font-semibold">By model</h3>
+              <RankedBars data={PREVIEW_MODELS} />
+            </div>
+            <div className="surface p-4">
+              <h3 className="mb-3 text-[13px] font-semibold">By team</h3>
+              <RankedBars
+                data={[
+                  { name: "Engineering", value: 1820 },
+                  { name: "Support", value: 1120 },
+                  { name: "Marketing", value: 740 },
+                  { name: "Sales", value: 502 },
+                ]}
+              />
             </div>
           </div>
         </div>
       </section>
 
-      {/* Features */}
-      <section id="features" className="border-t py-24">
-        <div className="mx-auto max-w-6xl px-6">
-          <h2 className="text-3xl font-bold">Built for teams shipping with AI</h2>
-          <div className="mt-12 grid gap-6 md:grid-cols-2">
-            {FEATURES.map((f) => (
-              <div key={f.title} className="panel p-6">
-                <h3 className="font-semibold">{f.title}</h3>
-                <p className="mt-2 text-sm muted">{f.body}</p>
+      {/* ── Section: anomalies ── */}
+      <section id="solutions" className="border-t py-16">
+        <div className="mx-auto max-w-[1120px] px-5">
+          <div className="max-w-[560px]">
+            <span className="label">Intelligence</span>
+            <h2 className="mt-2 text-[26px] font-semibold tracking-tight">Find expensive patterns before they become expensive problems.</h2>
+            <p className="mt-2 text-[14.5px] leading-relaxed muted">
+              ObserveMetrics continuously analyzes your usage and surfaces anomalies, optimizations and performance shifts.
+            </p>
+          </div>
+          <div className="mt-8 grid gap-4 md:grid-cols-3">
+            {/* Anomaly card */}
+            <div className="surface p-4">
+              <div className="flex items-center justify-between">
+                <span className="badge badge-danger"><IconZap size={11} />Cost anomaly</span>
               </div>
-            ))}
+              <h3 className="mt-3 text-[14px] font-semibold leading-snug">Claude usage increased 38%</h3>
+              <p className="mt-1 text-[13px] muted">Customer Support Agent</p>
+              <dl className="mt-3 space-y-1.5 border-t pt-3 text-[13px]">
+                <div className="flex justify-between"><dt className="muted">Input tokens</dt><dd className="font-medium" style={{ color: "var(--warning)" }}>+42%</dd></div>
+                <div className="flex justify-between"><dt className="muted">Est. monthly impact</dt><dd className="font-semibold tabular-nums">+$740</dd></div>
+              </dl>
+              <button className="btn btn-secondary btn-sm mt-4 w-full">View insight</button>
+            </div>
+            {/* Optimization card */}
+            <div className="surface p-4">
+              <div className="flex items-center justify-between">
+                <span className="badge badge-accent"><IconLightbulb size={11} />Optimization</span>
+              </div>
+              <h3 className="mt-3 text-[14px] font-semibold leading-snug">Oversized context windows</h3>
+              <p className="mt-1 text-[13px] muted">Customer Support Agent sends 3.2× more input than needed on routine tickets.</p>
+              <dl className="mt-3 space-y-1.5 border-t pt-3 text-[13px]">
+                <div className="flex justify-between"><dt className="muted">Potential savings</dt><dd className="font-semibold tabular-nums" style={{ color: "var(--success)" }}>$430/mo</dd></div>
+              </dl>
+              <button className="btn btn-secondary btn-sm mt-4 w-full">View insight</button>
+            </div>
+            {/* Latency card */}
+            <div className="surface p-4">
+              <div className="flex items-center justify-between">
+                <span className="badge badge-success"><IconClock size={11} />Performance</span>
+              </div>
+              <h3 className="mt-3 text-[14px] font-semibold leading-snug">Gemini leads on latency</h3>
+              <p className="mt-1 text-[13px] muted">Lowest average latency for your high-volume workloads — 1.2s vs 1.8s fleet average.</p>
+              <dl className="mt-3 space-y-1.5 border-t pt-3 text-[13px]">
+                <div className="flex justify-between"><dt className="muted">High-volume requests</dt><dd className="font-medium tabular-nums">29,840</dd></div>
+              </dl>
+              <button className="btn btn-secondary btn-sm mt-4 w-full">View insight</button>
+            </div>
           </div>
         </div>
       </section>
 
-      {/* Pricing */}
-      <section id="pricing" className="border-t py-24">
-        <div className="mx-auto max-w-6xl px-6">
-          <h2 className="text-3xl font-bold">Simple pricing that scales with you</h2>
-          <p className="mt-2 muted">Start free. Upgrade when your AI spend does.</p>
-          <div className="mt-12 grid gap-6 md:grid-cols-3">
-            {PRICING.map((p) => (
-              <div
-                key={p.name}
-                className="panel p-6"
-                style={p.highlight ? { borderColor: "var(--accent)", borderWidth: 2 } : undefined}
-              >
-                {p.highlight && <span className="badge">Most popular</span>}
-                <h3 className="mt-2 text-lg font-semibold">{p.name}</h3>
-                <div className="mt-3">
-                  <span className="text-4xl font-bold">{p.price}</span>{" "}
-                  <span className="text-sm muted">{p.period}</span>
-                </div>
-                <ul className="mt-6 space-y-2 text-sm">
-                  {p.features.map((f) => (
-                    <li key={f} className="flex items-start gap-2">
-                      <span style={{ color: "var(--accent)" }}>✓</span> {f}
-                    </li>
-                  ))}
-                </ul>
-                <Link
-                  href="/register"
-                  className={"btn mt-6 w-full " + (p.highlight ? "btn-primary" : "btn-outline")}
-                >
-                  Get started
-                </Link>
+      {/* ── Section: capabilities ── */}
+      <section id="pricing" className="border-t py-16">
+        <div className="mx-auto max-w-[1120px] px-5">
+          <div className="max-w-[560px]">
+            <span className="label">Platform</span>
+            <h2 className="mt-2 text-[26px] font-semibold tracking-tight">Measure more than tokens.</h2>
+          </div>
+          <div className="mt-8 grid gap-px overflow-hidden rounded-[10px] border md:grid-cols-2" style={{ background: "var(--border)" }}>
+            {CAPABILITIES.map((c) => (
+              <div key={c.kicker} className="p-5" style={{ background: "var(--surface)" }}>
+                <span className="label" style={{ color: "var(--accent)" }}>{c.kicker}</span>
+                <h3 className="mt-2 text-[15px] font-semibold">{c.title}</h3>
+                <p className="mt-1.5 text-[13.5px] leading-relaxed muted">{c.body}</p>
               </div>
             ))}
+          </div>
+
+          {/* Provider support strip */}
+          <div className="mt-10 flex flex-wrap items-center justify-center gap-x-8 gap-y-3 border-t pt-8">
+            {Object.entries(PROVIDER_LABELS).filter(([k]) => k !== "DEMO").map(([k, label]) => (
+              <span key={k} className="flex items-center gap-2 text-[13px] font-medium muted">
+                <span className="dot" style={{ background: PROVIDER_COLORS[k] }} />
+                {label}
+              </span>
+            ))}
+          </div>
+
+          {/* Final CTA */}
+          <div className="surface mt-10 flex flex-col items-center justify-between gap-4 p-6 sm:flex-row">
+            <div>
+              <h3 className="text-[16px] font-semibold">Start tracking your AI spend in minutes.</h3>
+              <p className="mt-0.5 text-[13px] muted">Connect a provider key — first insights within the hour. Free plan, no card.</p>
+            </div>
+            <Link href={authed ? "/dashboard" : "/register"} className="btn btn-primary shrink-0">Start free</Link>
           </div>
         </div>
       </section>
 
-      <footer className="border-t py-10 text-center text-sm muted">
-        © {new Date().getFullYear()} ObserveMetrics · Multi-tenant AI spend analytics
+      {/* ── Footer ── */}
+      <footer className="border-t py-8">
+        <div className="mx-auto flex max-w-[1120px] flex-wrap items-center justify-between gap-3 px-5">
+          <div className="flex items-center gap-2">
+            <LogoMark size={16} />
+            <span className="text-[13px] font-medium">ObserveMetrics</span>
+          </div>
+          <p className="text-xs faint">© 2026 ObserveMetrics · AI usage &amp; cost intelligence</p>
+        </div>
       </footer>
     </main>
   );
 }
 
-function Logo() {
-  return (
-    <span
-      className="inline-block h-6 w-6 rounded-md"
-      style={{ background: "linear-gradient(135deg, var(--accent), #a855f7)" }}
-    />
-  );
-}

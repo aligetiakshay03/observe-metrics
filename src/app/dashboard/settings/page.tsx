@@ -5,34 +5,47 @@ import { ProvidersSection } from "./ProvidersSection";
 import { TeamSection } from "./TeamSection";
 import { OrgSection } from "./OrgSection";
 
-const TABS = ["Providers", "Team", "Organization"] as const;
-type Tab = (typeof TABS)[number];
+const SECTIONS = ["Providers", "Team", "Workspace"] as const;
+type Section = (typeof SECTIONS)[number];
+
+const SUBTITLES: Record<Section, string> = {
+  Providers: "Connect AI providers with encrypted API keys — sync every 6 hours.",
+  Team: "Members, roles, and team tags for cost allocation.",
+  Workspace: "Organization name, plan and limits.",
+};
 
 export default function SettingsPage() {
-  const [tab, setTab] = useState<Tab>("Providers");
+  const [section, setSection] = useState<Section>("Providers");
 
   return (
     <div>
-      <div className="mb-6">
-        <h1 className="text-2xl font-semibold tracking-tight">Settings</h1>
-        <p className="mt-1 text-sm muted">Provider connections, team members, and organization preferences.</p>
-      </div>
-      <div className="mb-6 flex gap-1 rounded-lg border p-1" style={{ borderColor: "var(--border)", width: "fit-content" }}>
-        {TABS.map((t) => (
+      <SectionHeader title="Settings" subtitle={SUBTITLES[section]} />
+
+      <div className="mb-5 flex gap-0.5 rounded-lg border p-0.5" style={{ background: "var(--surface-2)", width: "fit-content" }}>
+        {SECTIONS.map((s) => (
           <button
-            key={t}
-            onClick={() => setTab(t)}
-            className="rounded-md px-4 py-1.5 text-sm"
-            style={tab === t ? { background: "var(--accent)", color: "#fff" } : undefined}
+            key={s}
+            onClick={() => setSection(s)}
+            className="rounded-md px-3.5 py-1.5 text-[13px] font-medium transition-all"
+            style={section === s ? { background: "var(--surface)", color: "var(--text)", boxShadow: "var(--shadow-xs)" } : { color: "var(--muted)" }}
           >
-            {t}
+            {s}
           </button>
         ))}
       </div>
 
-      {tab === "Providers" && <ProvidersSection />}
-      {tab === "Team" && <TeamSection />}
-      {tab === "Organization" && <OrgSection />}
+      {section === "Providers" && <ProvidersSection />}
+      {section === "Team" && <TeamSection />}
+      {section === "Workspace" && <OrgSection />}
+    </div>
+  );
+}
+
+function SectionHeader(props: { title: string; subtitle: string }) {
+  return (
+    <div className="mb-5">
+      <h1 className="text-xl font-semibold tracking-tight">{props.title}</h1>
+      <p className="mt-0.5 text-[13px] muted">{props.subtitle}</p>
     </div>
   );
 }

@@ -1,8 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { PageHeader, Panel, ProgressBar, Spinner, EmptyState } from "@/components/ui";
 import { useSession } from "../../providers";
+import { SectionHeader, BudgetProgress, StatusBadge, EmptyState, PageSkeleton, Skeleton, fmtUsd0 } from "@/components/ui";
 
 interface BudgetRow {
   id: string;
@@ -13,45 +13,24 @@ interface BudgetRow {
   progress: { spentUsd: number; percent: number; daysLeft: number };
 }
 
-interface AlertRow {
-  id: string;
-  type: string;
-  team: string | null;
-  message: string;
-  createdAt: string;
-  readAt: string | null;
-}
-
 export default function BudgetsPage() {
-  const { me, loading: sessionLoading, refresh } = useSession();
+  const { me, loading: sessionLoading } = useSession();
   const [budgets, setBudgets] = useState<BudgetRow[] | null>(null);
-  const [alerts, setAlerts] = useState<AlertRow[]>([]);
   const [newTeam, setNewTeam] = useState("");
   const [newAmount, setNewAmount] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   const load = useCallback(async () => {
-    const [bRes, aRes] = await Promise.all([
-      fetch("/api/v1/budgets", { cache: "no-store" }),
-      fetch("/api/v1/alerts", { cache: "no-store" }),
-    ]);
-    if (bRes.ok) setBudgets((await bRes.json()).data.budgets);
-    if (aRes.ok) {
-      const json = await aRes.json();
-      setAlerts(json.data.alerts);
-      if (json.data.alerts.some((a: AlertRow) => !a.readAt)) {
-        void fetch("/api/v1/alerts", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
-      }
-    }
+    const res = await fetch("/api/v1/budgets", { cache: "no-store" });
+    if (res.ok) setBudgets((await res.json()).data.budgets);
+    else setBudgets([]);
   }, []);
 
   useEffect(() => {
     if (sessionLoading || !me) return;
     void load();
   }, [me, sessionLoading, load]);
-
-  void refresh; // session refresh is triggered by mutations in Settings
 
   const budgetsEnabled = me?.activeOrg?.limits?.budgets ?? false;
   const isAdmin = me?.activeOrg?.role === "ADMIN";
@@ -63,10 +42,7 @@ export default function BudgetsPage() {
       const res = await fetch("/api/v1/budgets", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          team: newTeam.trim() || null,
-          amountCents: Math.round(parseFloat(newAmount) * 100),
-        }),
+        body: JSON.stringify({ team: newTeam.trim() || null, amountCents: Math.round(parseFloat(newAmount) * 100) }),
       });
       const json = await res.json();
       if (!res.ok) throw new Error(json.error?.message ?? "Could not create budget");
@@ -96,110 +72,122 @@ export default function BudgetsPage() {
     await load();
   }
 
-  if (sessionLoading) return <Spinner />;
+  if (sessionLoading || budgets === null) {
+    return (
+      <div>
+        <SectionHeader title="Budgets" subtitle="Monthly spend limits with alerts at 80% and 100%." />
+        <div className="grid gap-3 lg:grid-cols-2">
+          {[0, 1].map((i) => (
+            <div key={i} className="surface p-4">
+              <Skeleton className="h-4 w-28" />
+              <Skeleton className="mt-3 h-6 w-40" />
+              <Skeleton className="mt-4 h-1.5 w-full" />
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div>
-      <PageHeader
-        title="Budgets & Alerts"
-        subtitle="Monthly spend limits with email alerts at 80% and 100%"
+      <SectionHeader
+        title="Budgets"
+        subtitle="Monthly spend limits with email alerts at 80% and 100%."
       />
 
       {!budgetsEnabled && (
-        <div className="panel mb-6 flex items-center justify-between gap-4 p-5">
+        <div className="surface mb-4 flex flex-wrap items-center justify-between gap-3 p-4">
           <div>
-            <h2 className="font-semibold">Budgets are a Growth feature</h2>
-            <p className="mt-1 text-sm muted">
-              Upgrade to Growth to set monthly budgets per org or team, with alerts before you overspend.
-            </p>
+            <h2 className="text-[13.5px] font-semibold">Budgets are a Growth feature</h2>
+            <p className="mt-0.5 text-[13px] muted">Upgrade to set monthly budgets per team with proactive alerts.</p>
           </div>
-          <a href="/dashboard/settings/billing" className="btn btn-primary shrink-0">Upgrade</a>
+          <a href="/dashboard/billing" className="btn btn-primary btn-sm">Upgrade</a>
         </div>
       )}
 
-      <div className="grid gap-4 lg:grid-cols-3">
-        <div className="space-y-4 lg:col-span-2">
-          {(budgets ?? []).map((b) => (
-            <Panel key={b.id}>
-              <div className="flex flex-wrap items-start justify-between gap-3">
+      <div className="grid gap-3 lg:grid-cols-2">
+        {budgets.map((b) => {
+          const status =
+            b.progress.percent >= 100
+              ? { cls: "danger" as const, text: "Over budget" }
+              : b.progress.percent >= 80
+                ? { cls: "warning" as const, text: "Approaching limit" }
+                : { cls: "success" as const, text: "On track" };
+          return (
+            <div key={b.id} className="surface p-4">
+              <div className="flex items-start justify-between gap-3">
                 <div>
-                  <div className="font-medium">
-                    {b.team ? "Team · " + b.team : "Organization-wide"}
-                  </div>
-                  <div className="mt-0.5 text-xs muted">
-                    ${(b.progress.spentUsd).toFixed(2)} of ${(b.amountCents / 100).toFixed(2)} · {b.progress.daysLeft} days left this month
-                    {(b.alert80SentAt || b.alert100SentAt) && " · alerted"}
-                  </div>
+                  <h3 className="text-[14px] font-semibold">{b.team ? b.team : "Organization-wide"}</h3>
+                  <p className="mt-0.5 text-xs muted">
+                    Resets monthly · {b.progress.daysLeft} day{b.progress.daysLeft === 1 ? "" : "s"} left
+                  </p>
                 </div>
-                <div className="flex items-center gap-2">
-                  <span className="badge">{b.progress.percent}%</span>
-                  {isAdmin && (
-                    <button onClick={() => removeBudget(b.id)} className="text-xs muted hover:text-red-500">
-                      Delete
-                    </button>
-                  )}
-                </div>
+                <StatusBadge status={status.cls}>{status.text}</StatusBadge>
               </div>
-              <div className="mt-3">
-                <ProgressBar percent={b.progress.percent} />
+
+              <div className="mt-3.5 flex items-baseline justify-between">
+                <span className="text-[20px] font-bold tabular-nums">{fmtUsd0(b.progress.spentUsd)}</span>
+                <span className="text-[13px] muted tabular-nums">of {fmtUsd0(b.amountCents / 100)}</span>
               </div>
+              <div className="mt-2">
+                <BudgetProgress percent={b.progress.percent} />
+              </div>
+              <div className="mt-2 flex items-center justify-between text-xs">
+                <span className="font-medium" style={{ color: b.progress.percent >= 100 ? "var(--danger)" : b.progress.percent >= 80 ? "var(--warning)" : "var(--muted)" }}>
+                  {b.progress.percent.toFixed(1)}%
+                </span>
+                <span className="faint">
+                  {b.progress.percent >= 100
+                    ? "Exceeded by " + fmtUsd0(b.progress.spentUsd - b.amountCents / 100)
+                    : "Remaining: " + fmtUsd0(Math.max(0, b.amountCents / 100 - b.progress.spentUsd))}
+                </span>
+              </div>
+
               {isAdmin && (
-                <form
-                  className="mt-3 flex items-center gap-2"
-                  onSubmit={(e) => {
-                    e.preventDefault();
-                    const input = (e.currentTarget.elements.namedItem("amount") as HTMLInputElement).value;
-                    void updateAmount(b.id, input);
-                  }}
-                >
-                  <input name="amount" className="input w-32" placeholder={(b.amountCents / 100).toFixed(0)} />
-                  <button className="btn btn-outline">Update $</button>
-                </form>
+                <div className="mt-3 flex items-center justify-between border-t pt-3">
+                  <form
+                    className="flex items-center gap-2"
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      const input = (e.currentTarget.elements.namedItem("amount") as HTMLInputElement).value;
+                      void updateAmount(b.id, input);
+                    }}
+                  >
+                    <input name="amount" className="input" style={{ width: 110, height: 28 }} placeholder="New amount $" />
+                    <button className="btn btn-secondary btn-sm">Update</button>
+                  </form>
+                  <button onClick={() => removeBudget(b.id)} className="btn btn-danger btn-sm">Delete</button>
+                </div>
               )}
-            </Panel>
-          ))}
+            </div>
+          );
+        })}
 
-          {budgets !== null && budgets.length === 0 && budgetsEnabled && (
-            <EmptyState
-              icon="◑"
-              title="No budgets yet"
-              body="Create your first monthly budget to start tracking spend against a limit."
-            />
-          )}
-        </div>
+        {budgets.length === 0 && budgetsEnabled && (
+          <EmptyState
+            title="No budgets yet"
+            body="Create a monthly budget to track spend and get alerted before overspending."
+          />
+        )}
 
-        <div className="space-y-4">
-          {budgetsEnabled && isAdmin && (
-            <Panel title="New budget">
-              <div className="space-y-3">
-                <input className="input" placeholder="Team (empty = whole org)" value={newTeam} onChange={(e) => setNewTeam(e.target.value)} />
-                <input className="input" placeholder="Monthly amount (USD)" value={newAmount} onChange={(e) => setNewAmount(e.target.value)} inputMode="decimal" />
-                {error && <p className="text-sm text-red-500">{error}</p>}
-                <button onClick={createBudget} disabled={busy || !newAmount} className="btn btn-primary w-full disabled:opacity-60">
-                  Create budget
-                </button>
+        {budgetsEnabled && isAdmin && (
+          <div className="surface p-4">
+            <h3 className="text-[14px] font-semibold">New budget</h3>
+            <div className="mt-3 space-y-3">
+              <div>
+                <label className="label mb-1 block">Team (empty = whole org)</label>
+                <input className="input" value={newTeam} onChange={(e) => setNewTeam(e.target.value)} placeholder="Engineering" />
               </div>
-            </Panel>
-          )}
-
-          <Panel title="Alert history">
-            {alerts.length === 0 ? (
-              <p className="py-6 text-center text-sm muted">No alerts yet — you are under budget.</p>
-            ) : (
-              <ul className="space-y-3">
-                {alerts.map((a) => (
-                  <li key={a.id} className="border-t pt-3 first:border-0 first:pt-0">
-                    <div className="flex items-center gap-2">
-                      <span>{a.type === "BUDGET_100" ? "🚨" : a.type === "BUDGET_80" ? "⚠️" : "🔌"}</span>
-                      <span className="text-xs muted">{new Date(a.createdAt).toLocaleDateString()}</span>
-                    </div>
-                    <p className="mt-1 text-sm">{a.message}</p>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </Panel>
-        </div>
+              <div>
+                <label className="label mb-1 block">Monthly amount (USD)</label>
+                <input className="input" value={newAmount} onChange={(e) => setNewAmount(e.target.value)} inputMode="decimal" placeholder="2500" />
+              </div>
+              {error && <p className="text-[13px]" style={{ color: "var(--danger)" }}>{error}</p>}
+              <button onClick={createBudget} disabled={busy || !newAmount} className="btn btn-primary w-full">Create budget</button>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

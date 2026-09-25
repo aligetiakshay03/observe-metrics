@@ -17,163 +17,208 @@ import {
   Cell,
   Legend,
 } from "recharts";
+import { fmtUsd, fmtCompact, fmtUsd0, PROVIDER_COLORS } from "./ui";
 
-export const CHART_COLORS = ["#6366f1", "#8b5cf6", "#06b6d4", "#10b981", "#f59e0b", "#ef4444", "#ec4899", "#14b8a6"];
+/* Shared neutral chart theme */
+const axis = { fontSize: 11, fill: "var(--muted)" } as const;
+const grid = { stroke: "var(--border)", strokeDasharray: "3 4", vertical: false } as const;
 
-const axisStyle = { fontSize: 11, fill: "var(--muted)" };
-
-function tooltipStyle() {
+function tipStyle() {
   return {
     contentStyle: {
-      background: "var(--panel)",
+      background: "var(--surface)",
       border: "1px solid var(--border)",
-      borderRadius: 10,
+      borderRadius: 8,
       fontSize: 12,
+      boxShadow: "var(--shadow-sm)",
       color: "var(--text)",
+      padding: "8px 10px",
     },
-    labelStyle: { color: "var(--muted)", fontSize: 11 },
+    labelStyle: { color: "var(--muted)", fontSize: 11, fontWeight: 600, marginBottom: 2 },
+    itemStyle: { color: "var(--text)", padding: "2px 0" },
+    cursor: { stroke: "var(--border-strong)", strokeWidth: 1 },
   };
 }
 
-export function SpendTrendChart({
-  data,
-}: {
-  data: { day: string; spendUsd: number; tokens: number }[];
-}) {
+const SHORT_MONTH = (key: string) => {
+  const d = new Date(key + (key.length === 7 ? "-01" : "T00:00:00"));
+  if (isNaN(d.getTime())) return key;
+  return d.toLocaleDateString("en-US", { month: "short", day: key.length === 7 ? undefined : "numeric" });
+};
+
+/* ── Spend over time (area) ── */
+
+export function SpendAreaChart({ data, height = 260 }: { data: { day: string; spendUsd: number }[]; height?: number }) {
   return (
-    <ResponsiveContainer width="100%" height={280}>
-      <AreaChart data={data} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+    <ResponsiveContainer width="100%" height={height}>
+      <AreaChart data={data} margin={{ top: 6, right: 4, left: 0, bottom: 0 }}>
         <defs>
-          <linearGradient id="spendFill" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#6366f1" stopOpacity={0.35} />
-            <stop offset="100%" stopColor="#6366f1" stopOpacity={0.02} />
+          <linearGradient id="spendA" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="#5b4bff" stopOpacity={0.16} />
+            <stop offset="100%" stopColor="#5b4bff" stopOpacity={0} />
           </linearGradient>
         </defs>
-        <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
-        <XAxis dataKey="day" tick={axisStyle} tickLine={false} axisLine={false} minTickGap={24} />
-        <YAxis tick={axisStyle} tickLine={false} axisLine={false} width={52} tickFormatter={(v: number) => "$" + v} />
-        <Tooltip {...tooltipStyle()} formatter={(value: number | string) => ["$" + Number(value).toFixed(2), "Spend"]} />
-        <Area type="monotone" dataKey="spendUsd" stroke="#6366f1" strokeWidth={2} fill="url(#spendFill)" />
+        <CartesianGrid {...grid} />
+        <XAxis dataKey="day" tickFormatter={SHORT_MONTH} tick={axis} tickLine={false} axisLine={false} minTickGap={28} />
+        <YAxis tick={axis} tickLine={false} axisLine={false} width={46} tickFormatter={(v: number) => "$" + fmtCompact(v)} />
+        <Tooltip {...tipStyle()} formatter={(v) => [fmtUsd(Number(v)), "Spend"]} labelFormatter={(l) => String(l)} />
+        <Area type="monotone" dataKey="spendUsd" stroke="#5b4bff" strokeWidth={1.8} fill="url(#spendA)" activeDot={{ r: 3, strokeWidth: 0 }} />
       </AreaChart>
     </ResponsiveContainer>
   );
 }
 
-export function ProviderPie({ data }: { data: { provider: string; spendUsd: number }[] }) {
+/* ── Provider donut with center label + legend ── */
+
+const DONUT_COLORS = ["#5b4bff", "#8b5cf6", "#06b6d4", "#f59e0b", "#64748b"];
+
+export function ProviderDonut({
+  data,
+  height = 210,
+}: {
+  data: { provider: string; spendUsd: number }[];
+  height?: number;
+}) {
+  const total = data.reduce((a, b) => a + b.spendUsd, 0);
+  const colorOf = (p: string, i: number) => PROVIDER_COLORS[p] ?? DONUT_COLORS[i % DONUT_COLORS.length];
   return (
-    <ResponsiveContainer width="100%" height={240}>
-      <PieChart>
-        <Pie data={data} dataKey="spendUsd" nameKey="provider" innerRadius={55} outerRadius={85} paddingAngle={2}>
-          {data.map((_, i) => (
-            <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />
-          ))}
-        </Pie>
-        <Tooltip {...tooltipStyle()} formatter={(value: number | string) => ["$" + Number(value).toFixed(2), "Spend"]} />
-        <Legend wrapperStyle={{ fontSize: 12 }} />
-      </PieChart>
-    </ResponsiveContainer>
+    <div>
+      <div className="relative" style={{ height }}>
+        <ResponsiveContainer width="100%" height={height}>
+          <PieChart>
+            <Pie data={data} dataKey="spendUsd" nameKey="provider" innerRadius="68%" outerRadius="92%" paddingAngle={2} strokeWidth={0}>
+              {data.map((d, i) => (
+                <Cell key={d.provider} fill={colorOf(d.provider, i)} />
+              ))}
+            </Pie>
+            <Tooltip {...tipStyle()} formatter={(v) => [fmtUsd(Number(v)), "Spend"]} />
+          </PieChart>
+        </ResponsiveContainer>
+        <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">
+          <span className="label">Total</span>
+          <span className="text-lg font-bold tabular-nums">{fmtUsd0(total)}</span>
+        </div>
+      </div>
+      <div className="mt-3 space-y-1.5">
+        {data.map((d, i) => (
+          <div key={d.provider} className="flex items-center justify-between text-[13px]">
+            <span className="flex items-center gap-2">
+              <span className="dot" style={{ background: colorOf(d.provider, i) }} />
+              {d.provider === "GOOGLE" ? "Google Gemini" : d.provider.charAt(0) + d.provider.slice(1).toLowerCase()}
+            </span>
+            <span className="tabular-nums muted">
+              {total > 0 ? ((d.spendUsd / total) * 100).toFixed(0) + "%" : "0%"}
+              <span className="ml-2 font-medium" style={{ color: "var(--text)" }}>{fmtUsd0(d.spendUsd)}</span>
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }
 
-export function ModelBar({
+/* ── Horizontal bars for by-team / by-model / by-application ── */
+
+export function RankedBars({
   data,
-  valueKey = "spendUsd",
-  label = "Spend",
   currency = true,
+  color = "var(--accent)",
+  maxRows = 8,
 }: {
-  data: Record<string, unknown>[];
-  valueKey?: string;
-  label?: string;
+  data: { name: string; value: number }[];
   currency?: boolean;
+  color?: string;
+  maxRows?: number;
 }) {
+  const rows = data.slice(0, maxRows);
+  const max = rows[0]?.value || 1;
+  const fmt = currency ? fmtUsd0 : fmtCompact;
+  if (rows.length === 0) return <p className="py-10 text-center text-[13px] muted">No data for this period</p>;
   return (
-    <ResponsiveContainer width="100%" height={280}>
-      <BarChart data={data} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
-        <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
-        <XAxis dataKey="model" tick={axisStyle} tickLine={false} axisLine={false} />
-        <YAxis
-          tick={axisStyle}
-          tickLine={false}
-          axisLine={false}
-          width={56}
-          tickFormatter={(v: number) => (currency ? "$" + v : compact(v))}
-        />
-        <Tooltip
-          {...tooltipStyle()}
-          formatter={(value: number | string) => [currency ? "$" + Number(value).toFixed(2) : compact(Number(value)), label]}
-        />
-        <Bar dataKey={valueKey} radius={[6, 6, 0, 0]}>
-          {data.map((_, i) => (
-            <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />
-          ))}
-        </Bar>
-      </BarChart>
-    </ResponsiveContainer>
+    <div className="space-y-3">
+      {rows.map((r) => (
+        <div key={r.name}>
+          <div className="mb-1 flex items-center justify-between text-[13px]">
+            <span className="truncate">{r.name}</span>
+            <span className="ml-3 shrink-0 font-medium tabular-nums">{fmt(r.value)}</span>
+          </div>
+          <div className="progress-track">
+            <div className="progress-fill" style={{ width: Math.max(2, (r.value / max) * 100) + "%", background: color }} />
+          </div>
+        </div>
+      ))}
+    </div>
   );
 }
 
-export function TokenStackedArea({
-  data,
-}: {
-  data: { day: string; inputTokens: number; outputTokens: number }[];
-}) {
+/* ── Tokens stacked (input vs output) ── */
+
+export function TokenStackedArea({ data, height = 260 }: { data: { day: string; inputTokens: number; outputTokens: number }[]; height?: number }) {
   return (
-    <ResponsiveContainer width="100%" height={280}>
-      <AreaChart data={data} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+    <ResponsiveContainer width="100%" height={height}>
+      <AreaChart data={data} margin={{ top: 6, right: 4, left: 0, bottom: 0 }}>
         <defs>
-          <linearGradient id="inFill" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#6366f1" stopOpacity={0.4} />
-            <stop offset="100%" stopColor="#6366f1" stopOpacity={0.03} />
+          <linearGradient id="tokIn" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="#5b4bff" stopOpacity={0.22} />
+            <stop offset="100%" stopColor="#5b4bff" stopOpacity={0} />
           </linearGradient>
-          <linearGradient id="outFill" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#10b981" stopOpacity={0.4} />
-            <stop offset="100%" stopColor="#10b981" stopOpacity={0.03} />
+          <linearGradient id="tokOut" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="#16a34a" stopOpacity={0.22} />
+            <stop offset="100%" stopColor="#16a34a" stopOpacity={0} />
           </linearGradient>
         </defs>
-        <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
-        <XAxis dataKey="day" tick={axisStyle} tickLine={false} axisLine={false} minTickGap={24} />
-        <YAxis tick={axisStyle} tickLine={false} axisLine={false} width={56} tickFormatter={(v: number) => compact(v)} />
-        <Tooltip {...tooltipStyle()} formatter={(value: number | string) => [compact(Number(value))]} />
-        <Area type="monotone" dataKey="inputTokens" stackId="t" stroke="#6366f1" fill="url(#inFill)" />
-        <Area type="monotone" dataKey="outputTokens" stackId="t" stroke="#10b981" fill="url(#outFill)" />
-        <Legend wrapperStyle={{ fontSize: 12 }} />
+        <CartesianGrid {...grid} />
+        <XAxis dataKey="day" tickFormatter={SHORT_MONTH} tick={axis} tickLine={false} axisLine={false} minTickGap={28} />
+        <YAxis tick={axis} tickLine={false} axisLine={false} width={46} tickFormatter={(v: number) => fmtCompact(v)} />
+        <Tooltip {...tipStyle()} formatter={(v, name) => [fmtCompact(Number(v)), name === "inputTokens" ? "Input" : "Output"]} />
+        <Legend formatter={(v) => <span style={{ color: "var(--muted)", fontSize: 12 }}>{v === "inputTokens" ? "Input tokens" : "Output tokens"}</span>} />
+        <Area type="monotone" dataKey="inputTokens" stackId="t" stroke="#5b4bff" strokeWidth={1.6} fill="url(#tokIn)" />
+        <Area type="monotone" dataKey="outputTokens" stackId="t" stroke="#16a34a" strokeWidth={1.6} fill="url(#tokOut)" />
       </AreaChart>
     </ResponsiveContainer>
   );
 }
 
-export function ForecastLine({
-  data,
-}: {
-  data: { month: string; spendUsd: number; projected: boolean }[];
-}) {
-  // Split into actual (solid) and projected (dashed) series. The dashed series
-  // also carries the last actual point so the two lines connect visually.
-  const lastActualIdx = data.reduce((acc, d, i) => (d.projected ? acc : i), 0);
+/* ── Monthly spend + forecast (solid actual, dashed projection) ── */
+
+export function ForecastChart({ data, height = 240 }: { data: { month: string; spendUsd: number; projected: boolean }[]; height?: number }) {
+  const lastActual = data.reduce((acc, d, i) => (d.projected ? acc : i), 0);
   const mapped = data.map((d, i) => ({
     month: d.month,
     actual: d.projected ? null : d.spendUsd,
-    projected:
-      d.projected || i === lastActualIdx ? d.spendUsd : null,
+    projected: d.projected || i === lastActual ? d.spendUsd : null,
   }));
   return (
-    <ResponsiveContainer width="100%" height={260}>
-      <LineChart data={mapped} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
-        <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
-        <XAxis dataKey="month" tick={axisStyle} tickLine={false} axisLine={false} />
-        <YAxis tick={axisStyle} tickLine={false} axisLine={false} width={56} tickFormatter={(v: number) => "$" + compact(v)} />
-        <Tooltip {...tooltipStyle()} formatter={(value: number | string) => ["$" + Number(value).toFixed(2), "Spend"]} />
-        <Line type="monotone" dataKey="actual" stroke="#6366f1" strokeWidth={2} dot={{ r: 3 }} connectNulls={false} name="Actual" />
-        <Line type="monotone" dataKey="projected" stroke="#818cf8" strokeWidth={2} strokeDasharray="6 6" dot={{ r: 3 }} connectNulls={true} name="Projected" />
-        <Legend wrapperStyle={{ fontSize: 12 }} />
+    <ResponsiveContainer width="100%" height={height}>
+      <LineChart data={mapped} margin={{ top: 6, right: 4, left: 0, bottom: 0 }}>
+        <CartesianGrid {...grid} />
+        <XAxis dataKey="month" tick={axis} tickLine={false} axisLine={false} />
+        <YAxis tick={axis} tickLine={false} axisLine={false} width={52} tickFormatter={(v: number) => "$" + fmtCompact(v)} />
+        <Tooltip {...tipStyle()} formatter={(v) => [fmtUsd(Number(v)), "Spend"]} />
+        <Legend formatter={(v) => <span style={{ color: "var(--muted)", fontSize: 12 }}>{v === "actual" ? "Actual" : "Projected"}</span>} />
+        <Line type="monotone" dataKey="actual" stroke="#5b4bff" strokeWidth={1.8} dot={{ r: 2.5 }} connectNulls={false} name="actual" />
+        <Line type="monotone" dataKey="projected" stroke="#8b5cf6" strokeWidth={1.8} strokeDasharray="5 5" dot={{ r: 2.5 }} connectNulls={true} name="projected" />
       </LineChart>
     </ResponsiveContainer>
   );
 }
 
-function compact(v: number): string {
-  if (Math.abs(v) >= 1e9) return (v / 1e9).toFixed(1) + "B";
-  if (Math.abs(v) >= 1e6) return (v / 1e6).toFixed(1) + "M";
-  if (Math.abs(v) >= 1e3) return (v / 1e3).toFixed(1) + "K";
-  return String(Math.round(v));
+/* ── Simple vertical bars (models) ── */
+
+export function ModelBars({ data, height = 240 }: { data: { model: string; spendUsd: number }[]; height?: number }) {
+  return (
+    <ResponsiveContainer width="100%" height={height}>
+      <BarChart data={data} margin={{ top: 6, right: 4, left: 0, bottom: 0 }}>
+        <CartesianGrid {...grid} />
+        <XAxis dataKey="model" tick={axis} tickLine={false} axisLine={false} interval={0} angle={-18} textAnchor="end" height={54} />
+        <YAxis tick={axis} tickLine={false} axisLine={false} width={46} tickFormatter={(v: number) => "$" + fmtCompact(v)} />
+        <Tooltip {...tipStyle()} formatter={(v) => [fmtUsd(Number(v)), "Spend"]} cursor={{ fill: "var(--surface-2)" }} />
+        <Bar dataKey="spendUsd" radius={[4, 4, 0, 0]} maxBarSize={44}>
+          {data.map((_, i) => (
+            <Cell key={i} fill={DONUT_COLORS[i % DONUT_COLORS.length]} />
+          ))}
+        </Bar>
+      </BarChart>
+    </ResponsiveContainer>
+  );
 }

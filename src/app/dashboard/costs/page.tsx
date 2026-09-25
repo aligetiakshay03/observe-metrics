@@ -1,186 +1,174 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { PageHeader, Panel, EmptyState, Spinner } from "@/components/ui";
-import { ModelBar, ForecastLine } from "@/components/charts";
 import { useSession } from "../../providers";
+import {
+  MetricCard, ChartCard, SectionHeader, EmptyState, PageSkeleton, RangePicker,
+  FilterDropdown, PROVIDER_FILTER_OPTIONS, fmtUsd, fmtUsd0, fmtCompact,
+} from "@/components/ui";
+import { SpendAreaChart, ProviderDonut, RankedBars, ModelBars, ForecastChart } from "@/components/charts";
+import { IconDownload } from "@/components/icons";
 
-interface CostAnalytics {
-  byModel: { model: string; provider: string; spendUsd: number }[];
-  byTeam: { team: string; spendUsd: number }[];
+interface OrgData {
+  stats: { spendUsd: number; deltaPct: number | null; requests: number };
+  providers: { provider: string; spendUsd: number }[];
+  models: { model: string; provider: string; spendUsd: number; requests: number }[];
+  teams: { team: string; spendUsd: number }[];
+  applications: { app: string; spendUsd: number }[];
   monthly: { month: string; spendUsd: number }[];
-  forecast: { month: string; spendUsd: number; projected: boolean }[];
-  totals: { spendUsd: number; avgCostPerRequest: number };
+  daily: { day: string; spendUsd: number }[];
 }
 
-const RANGES = [
-  { label: "30d", days: 30 },
-  { label: "90d", days: 90 },
-  { label: "6mo", days: 180 },
-  { label: "1y", days: 365 },
-];
+function forecastFrom(monthly: { month: string; spendUsd: number }[]): { month: string; spendUsd: number; projected: boolean }[] {
+  const out = monthly.map((m) => ({ ...m, projected: false }));
+  if (monthly.length >= 2) {
+    const n = monthly.length;
+    const xs = monthly.map((_, i) => i);
+    const ys = monthly.map((m) => m.spendUsd);
+    const xMean = xs.reduce((a, b) => a + b, 0) / n;
+    const yMean = ys.reduce((a, b) => a + b, 0) / n;
+    const slope = xs.reduce((acc, x, i) => acc + (x - xMean) * (ys[i]! - yMean), 0) / (xs.reduce((acc, x) => acc + (x - xMean) ** 2, 0) || 1);
+    const intercept = yMean - slope * xMean;
+    const last = new Date(monthly[n - 1]!.month + "-01T00:00:00Z");
+    for (let k = 1; k <= 3; k++) {
+      const d = new Date(last);
+      d.setUTCMonth(d.getUTCMonth() + k);
+      out.push({
+        month: d.toISOString().slice(0, 7),
+        spendUsd: Math.max(0, Math.round((intercept + slope * (n - 1 + k)) * 100) / 100),
+        projected: true,
+      });
+    }
+  }
+  return out;
+}
 
 export default function CostsPage() {
   const { me, loading: sessionLoading } = useSession();
-  const [range, setRange] = useState(90);
+  const [days, setDays] = useState(90);
   const [provider, setProvider] = useState("");
-  const [data, setData] = useState<CostAnalytics | null>(null);
+  const [data, setData] = useState<OrgData | null>(null);
   const [loading, setLoading] = useState(true);
-  const [exportOpen, setExportOpen] = useState(false);
 
   useEffect(() => {
     if (sessionLoading || !me) return;
     setLoading(true);
-    const params = new URLSearchParams({ from: daysAgo(range), to: today() });
+    const params = new URLSearchParams({ from: isoDaysAgo(days), to: isoToday() });
     if (provider) params.set("provider", provider);
-    fetch("/api/v1/analytics/costs?" + params.toString(), { cache: "no-store" })
-      .then(async (res) => {
-        const json = await res.json();
-        if (res.ok) setData(json.data);
-      })
+    fetch("/api/v1/analytics/org?" + params.toString(), { cache: "no-store" })
+      .then(async (res) => (res.ok ? (await res.json()).data : null))
+      .then((d) => setData(d?.empty ? null : d))
       .finally(() => setLoading(false));
-  }, [me, sessionLoading, range, provider]);
+  }, [me, sessionLoading, days, provider]);
 
-  if (sessionLoading || loading) return <Spinner />;
+  if (sessionLoading || loading) return <PageSkeleton />;
 
-  const hasData = (data?.totals.spendUsd ?? 0) > 0;
-  const canExport = me?.activeOrg?.limits?.exports ?? false;
-  const fmtUsd = (v: number) => "$" + v.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-
-  function exportCsv(view: string) {
-    const params = new URLSearchParams({ view, from: daysAgo(range), to: today() });
-    if (provider) params.set("provider", provider);
-    window.location.href = "/api/v1/exports/csv?" + params.toString();
+  if (!data || data.stats.spendUsd <= 0) {
+    return (
+      <div>
+        <SectionHeader title="Cost analytics" subtitle="Where every AI dollar goes — by provider, model, team and application." />
+        <EmptyState
+          title="No cost data yet"
+          body="Connect a provider and sync usage to see cost breakdowns and projections."
+          ctaHref="/dashboard/settings"
+          ctaLabel="Connect provider"
+        />
+      </div>
+    );
   }
+
+  const s = data.stats;
+  const monthDays = Math.max(1, data.daily.length);
+  const projectedMonthly = days >= 28 ? (s.spendUsd / monthDays) * 30 : s.spendUsd * (30 / Math.min(days, 30));
+  const savings = data.models.length >= 3 ? data.models[0]!.spendUsd * 0.18 : 0;
+  const forecast = forecastFrom(data.monthly);
 
   return (
     <div>
-      <PageHeader
-        title="Cost Analytics"
-        subtitle="Where the money goes — by model, team, and month"
+      <SectionHeader
+        title="Cost analytics"
+        subtitle="Where every AI dollar goes — by provider, model, team and application."
         actions={
           <>
-            {canExport && (
-              <div className="relative">
-                <button onClick={() => setExportOpen((o) => !o)} className="btn btn-outline">
-                  Export ▾
-                </button>
-                {exportOpen && (
-                  <div className="absolute right-0 z-20 mt-1 w-44 rounded-lg border p-1 shadow-lg" style={{ background: "var(--panel)" }}>
-                    <button onClick={() => { setExportOpen(false); exportCsv("overview"); }} className="w-full rounded-md px-3 py-2 text-left text-sm hover:bg-black/5 dark:hover:bg-white/5">Daily spend (CSV)</button>
-                    <button onClick={() => { setExportOpen(false); exportCsv("costs"); }} className="w-full rounded-md px-3 py-2 text-left text-sm hover:bg-black/5 dark:hover:bg-white/5">Cost by model (CSV)</button>
-                    <button onClick={() => { setExportOpen(false); exportCsv("costs_by_team"); }} className="w-full rounded-md px-3 py-2 text-left text-sm hover:bg-black/5 dark:hover:bg-white/5">Cost by team (CSV)</button>
-                    <button
-                      onClick={() => { setExportOpen(false); window.location.href = "/api/v1/exports/pdf"; }}
-                      className="w-full rounded-md px-3 py-2 text-left text-sm hover:bg-black/5 dark:hover:bg-white/5"
-                    >
-                      Monthly summary (PDF)
-                    </button>
-                  </div>
-                )}
-              </div>
-            )}
-            <select className="input w-auto" value={provider} onChange={(e) => setProvider(e.target.value)}>
-              <option value="">All providers</option>
-              {["OPENAI", "ANTHROPIC", "GOOGLE", "MISTRAL", "DEMO"].map((p) => (
-                <option key={p} value={p}>{p}</option>
-              ))}
-            </select>
-            <div className="flex rounded-lg border" style={{ borderColor: "var(--border)" }}>
-              {RANGES.map((r) => (
-                <button
-                  key={r.days}
-                  onClick={() => setRange(r.days)}
-                  className="px-3 py-2 text-sm"
-                  style={range === r.days ? { background: "var(--accent)", color: "#fff", borderRadius: 8 } : { borderRadius: 8 }}
-                >
-                  {r.label}
-                </button>
-              ))}
-            </div>
+            <FilterDropdown value={provider} onChange={setProvider} options={PROVIDER_FILTER_OPTIONS} allLabel="All providers" />
+            <RangePicker value={days} onChange={setDays} />
+            <ExportMenu />
           </>
         }
       />
 
-      {!hasData ? (
-        <EmptyState
-          icon="▤"
-          title="No cost data yet"
-          body="Cost by model, team and forecast appear once a provider connection has synced usage."
-          ctaHref="/dashboard/settings"
-          ctaLabel="Connect a provider"
-        />
-      ) : (
-        <>
-          <div className="grid gap-4 sm:grid-cols-3">
-            <div className="panel p-5">
-              <div className="text-xs muted">Total spend (period)</div>
-              <div className="mt-1 text-2xl font-semibold tabular-nums">{fmtUsd(data!.totals.spendUsd)}</div>
-            </div>
-            <div className="panel p-5">
-              <div className="text-xs muted">Avg cost per request</div>
-              <div className="mt-1 text-2xl font-semibold tabular-nums">{fmtUsd(data!.totals.avgCostPerRequest)}</div>
-            </div>
-            <div className="panel p-5">
-              <div className="text-xs muted">Projected next month</div>
-              <div className="mt-1 text-2xl font-semibold tabular-nums">
-                {data!.forecast.filter((f) => f.projected).length > 0
-                  ? fmtUsd(data!.forecast.filter((f) => f.projected)[0]!.spendUsd)
-                  : "—"}
-              </div>
-            </div>
-          </div>
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <MetricCard label="Total spend" value={fmtUsd0(s.spendUsd)} delta={s.deltaPct} goodWhenDown spark={data.daily.slice(-14).map((d) => d.spendUsd)} />
+        <MetricCard label="Projected monthly spend" value={fmtUsd0(projectedMonthly)} />
+        <MetricCard label="Spend growth" value={(s.deltaPct == null ? "—" : (s.deltaPct >= 0 ? "+" : "") + s.deltaPct.toFixed(1) + "%")} delta={s.deltaPct} goodWhenDown />
+        <MetricCard label="Potential savings" value={fmtUsd0(savings)} spark={data.daily.slice(-14).map((d) => d.spendUsd * 0.82)} sparkColor="#16a34a" />
+      </div>
 
-          <div className="mt-6 grid gap-4 lg:grid-cols-2">
-            <Panel title="Cost by model">
-              <ModelBar data={data!.byModel.slice(0, 10)} />
-            </Panel>
-            <Panel title="Cost by team">
-              {data!.byTeam.length ? (
-                <div className="space-y-4 pt-2">
-                  {data!.byTeam.map((t) => {
-                    const max = data!.byTeam[0]!.spendUsd || 1;
-                    return (
-                      <div key={t.team}>
-                        <div className="mb-1 flex justify-between text-sm">
-                          <span>{t.team}</span>
-                          <span className="font-medium tabular-nums">{fmtUsd(t.spendUsd)}</span>
-                        </div>
-                        <div className="h-2 w-full overflow-hidden rounded-full" style={{ background: "rgba(128,128,128,0.15)" }}>
-                          <div className="h-full rounded-full" style={{ width: (t.spendUsd / max) * 100 + "%", background: "var(--accent)" }} />
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              ) : (
-                <p className="py-10 text-center text-sm muted">
-                  No team tagging yet. Set a team on members in Settings → Team.
-                </p>
-              )}
-            </Panel>
-          </div>
+      <div className="mt-4 grid gap-4 lg:grid-cols-3">
+        <ChartCard title="Spend over time" subtitle={"Daily · last " + days + " days"} className="lg:col-span-2">
+          <SpendAreaChart data={data.daily} />
+        </ChartCard>
+        <ChartCard title="Spend by provider">
+          <ProviderDonut data={data.providers} />
+        </ChartCard>
+      </div>
 
-          <div className="mt-4">
-            <Panel title="Monthly spend & forecast">
-              <ForecastLine data={data!.forecast} />
-              <p className="mt-2 text-xs muted">
-                Dashed region beyond the last complete month is a linear-regression projection (3 months).
-              </p>
-            </Panel>
-          </div>
-        </>
+      <div className="mt-4 grid gap-4 lg:grid-cols-2">
+        <ChartCard title="Spend by model">
+          <ModelBars data={data.models.slice(0, 8)} />
+        </ChartCard>
+        <ChartCard title="Spend by team">
+          <RankedBars data={data.teams.map((t) => ({ name: t.team, value: t.spendUsd }))} />
+        </ChartCard>
+      </div>
+
+      <div className="mt-4 grid gap-4 lg:grid-cols-2">
+        <ChartCard title="Spend by application">
+          <RankedBars data={data.applications.map((a) => ({ name: a.app, value: a.spendUsd }))} color="#8b5cf6" />
+        </ChartCard>
+        <ChartCard title="Monthly spend & forecast" subtitle="Linear projection, 3 months">
+          <ForecastChart data={forecast} />
+        </ChartCard>
+      </div>
+    </div>
+  );
+}
+
+function ExportMenu() {
+  const [open, setOpen] = useState(false);
+  function csv(view: string) {
+    const params = new URLSearchParams({ view, from: isoDaysAgo(90), to: isoToday() });
+    window.location.href = "/api/v1/exports/csv?" + params.toString();
+    setOpen(false);
+  }
+  return (
+    <div className="relative">
+      <button className="btn btn-secondary btn-sm" onClick={() => setOpen((o) => !o)}>
+        <IconDownload size={13} /> Export
+      </button>
+      {open && (
+        <div className="absolute right-0 z-20 mt-1 w-48 rounded-lg border p-1 shadow-lg" style={{ background: "var(--surface)" }}>
+          {[
+            ["Daily spend (CSV)", () => csv("overview")],
+            ["Cost by model (CSV)", () => csv("costs")],
+            ["Cost by team (CSV)", () => csv("costs_by_team")],
+            ["Monthly summary (PDF)", () => { window.location.href = "/api/v1/exports/pdf"; setOpen(false); }],
+          ].map(([label, fn]) => (
+            <button key={label as string} onClick={fn as () => void} className="w-full rounded-md px-2.5 py-2 text-left text-[13px] transition-colors hover:bg-[var(--surface-2)]">
+              {label as string}
+            </button>
+          ))}
+        </div>
       )}
     </div>
   );
 }
 
-function daysAgo(n: number): string {
+function isoDaysAgo(n: number): string {
   const d = new Date();
   d.setUTCDate(d.getUTCDate() - (n - 1));
   return d.toISOString().slice(0, 10);
 }
-
-function today(): string {
+function isoToday(): string {
   return new Date().toISOString().slice(0, 10);
 }

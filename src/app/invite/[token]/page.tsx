@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
+import { LogoMark } from "@/components/ui";
 
 interface InviteInfo {
   email: string;
@@ -11,7 +12,6 @@ interface InviteInfo {
 }
 
 export default function InvitePage() {
-  // Client hook works whether params is a plain object (Next 14) or a promise (Next 15).
   const { token } = useParams<{ token: string }>();
   const router = useRouter();
   const [info, setInfo] = useState<InviteInfo | null>(null);
@@ -50,40 +50,35 @@ export default function InvitePage() {
     }
   }
 
-  if (error && !info) {
-    return (
-      <main className="flex min-h-screen items-center justify-center px-6">
-        <div className="panel max-w-sm p-8 text-center">
-          <h1 className="text-lg font-semibold">Invitation unavailable</h1>
-          <p className="mt-2 text-sm muted">{error}</p>
-        </div>
-      </main>
-    );
-  }
-
   return (
-    <main className="flex min-h-screen items-center justify-center px-6">
-      <div className="panel w-full max-w-sm p-6">
-        <h1 className="text-xl font-semibold">
+    <main className="flex min-h-screen flex-col items-center justify-center px-5">
+      <div className="surface w-full max-w-[380px] p-6">
+        <div className="flex items-center gap-2">
+          <LogoMark size={22} />
+          <span className="text-[15px] font-semibold tracking-tight">ObserveMetrics</span>
+        </div>
+        <h1 className="mt-5 text-lg font-semibold">
           Join {info?.organization.name ?? "your team"}
         </h1>
-        <p className="mt-1 text-sm muted">
+        <p className="mt-1 text-[13px] muted">
           {info
             ? "You were invited as " + info.role.toLowerCase() + (info.team ? " on the " + info.team + " team" : "") + "."
-            : "Loading invitation…"}
+            : error
+              ? null
+              : "Loading invitation…"}
         </p>
-        <div className="mt-6 space-y-4">
+        <div className="mt-5 space-y-3.5">
           <div>
-            <label className="mb-1 block text-sm">Name</label>
+            <label className="label mb-1.5 block">Name</label>
             <input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="Your name" />
           </div>
           <div>
-            <label className="mb-1 block text-sm">Password</label>
+            <label className="label mb-1.5 block">Password</label>
             <input type="password" className="input" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Set a password (8+ chars)" />
-            <p className="mt-1 text-xs muted">Leave empty if you already have an account for {info?.email}.</p>
+            <p className="mt-1.5 text-xs muted">Leave empty if you already have an account for {info?.email}.</p>
           </div>
-          {error && <p className="text-sm text-red-500">{error}</p>}
-          <button onClick={accept} disabled={busy || !info} className="btn btn-primary w-full disabled:opacity-60">
+          {error && <p className="text-[13px]" style={{ color: "var(--danger)" }}>{error}</p>}
+          <button onClick={accept} disabled={busy || !info} className="btn btn-primary w-full">
             {busy ? "Joining…" : "Accept invitation"}
           </button>
         </div>

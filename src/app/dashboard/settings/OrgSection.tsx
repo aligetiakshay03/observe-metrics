@@ -2,8 +2,8 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { Panel, Spinner } from "@/components/ui";
 import { useSession } from "../../providers";
+import { StatusBadge } from "@/components/ui";
 
 export function OrgSection() {
   const { me, refresh } = useSession();
@@ -34,41 +34,39 @@ export function OrgSection() {
     }
   }
 
-  if (!me) return <Spinner />;
+  if (!me) return null;
 
   const limits = me.activeOrg?.limits;
+  const plan = (me.activeOrg?.plan ?? "FREE") as "FREE" | "STARTER" | "GROWTH";
 
   return (
-    <div className="grid gap-6 lg:grid-cols-2">
-      <Panel title="Organization">
-        <form onSubmit={save} className="space-y-4">
+    <div className="grid gap-4 lg:grid-cols-2">
+      <div className="surface p-4">
+        <h3 className="text-[14px] font-semibold">Workspace</h3>
+        <form onSubmit={save} className="mt-3.5 space-y-3.5">
           <div>
-            <label className="mb-1 block text-sm">Name</label>
+            <label className="label mb-1.5 block">Organization name</label>
             <input className="input" value={name} onChange={(e) => setName(e.target.value)} />
           </div>
-          <div>
-            <label className="mb-1 block text-sm">Plan</label>
-            <div className="flex items-center gap-3">
-              <span className="badge">{me.activeOrg?.plan}</span>
-              <Link href="/dashboard/billing" className="text-sm" style={{ color: "var(--accent)" }}>
-                Manage billing →
-              </Link>
-            </div>
-          </div>
-          {saved && <p className="text-sm" style={{ color: "#10b981" }}>Saved</p>}
-          <button disabled={busy} className="btn btn-primary disabled:opacity-60">Save changes</button>
+          {saved && <p className="text-[13px]" style={{ color: "var(--success)" }}>Saved</p>}
+          <button disabled={busy} className="btn btn-primary">Save changes</button>
         </form>
-      </Panel>
+      </div>
 
-      <Panel title="Plan limits">
-        <ul className="space-y-2 text-sm">
-          <li className="flex justify-between"><span className="muted">Provider connections</span><span>{limits?.maxProviders === -1 ? "Unlimited" : limits?.maxProviders}</span></li>
-          <li className="flex justify-between"><span className="muted">Team members</span><span>{limits?.maxMembers === -1 ? "Unlimited" : limits?.maxMembers}</span></li>
-          <li className="flex justify-between"><span className="muted">Data retention</span><span>{limits?.retentionDays} days</span></li>
-          <li className="flex justify-between"><span className="muted">Budgets & alerts</span><span>{limits?.budgets ? "Included" : "—"}</span></li>
-          <li className="flex justify-between"><span className="muted">CSV / PDF export</span><span>{limits?.exports ? "Included" : "—"}</span></li>
-        </ul>
-      </Panel>
+      <div className="surface p-4">
+        <div className="flex items-center justify-between">
+          <h3 className="text-[14px] font-semibold">Plan &amp; limits</h3>
+          <StatusBadge status={plan === "GROWTH" ? "accent" : plan === "STARTER" ? "success" : "neutral"}>{plan}</StatusBadge>
+        </div>
+        <dl className="mt-3.5 space-y-2.5 text-[13px]">
+          <div className="flex justify-between border-b pb-2"><dt className="muted">Provider connections</dt><dd className="font-medium">{limits?.maxProviders === -1 ? "Unlimited" : limits?.maxProviders}</dd></div>
+          <div className="flex justify-between border-b pb-2"><dt className="muted">Team members</dt><dd className="font-medium">{limits?.maxMembers === -1 ? "Unlimited" : limits?.maxMembers}</dd></div>
+          <div className="flex justify-between border-b pb-2"><dt className="muted">Data retention</dt><dd className="font-medium">{limits?.retentionDays} days</dd></div>
+          <div className="flex justify-between border-b pb-2"><dt className="muted">Budgets &amp; alerts</dt><dd className="font-medium">{limits?.budgets ? "Included" : "—"}</dd></div>
+          <div className="flex justify-between"><dt className="muted">CSV / PDF export</dt><dd className="font-medium">{limits?.exports ? "Included" : "—"}</dd></div>
+        </dl>
+        <Link href="/dashboard/billing" className="btn btn-secondary btn-sm mt-4">Manage billing →</Link>
+      </div>
     </div>
   );
 }
