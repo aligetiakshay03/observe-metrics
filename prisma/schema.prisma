@@ -1,0 +1,353 @@
+// ObserveMetrics — multi-tenant AI spend & usage analytics
+// Every domain table carries organizationId so tenancy can be enforced at the
+// query layer (all queries go through src/lib/db.ts helpers that scope by org).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────────────────────────────────────────
+// Organizations & users
+// ─────────────────────────────────────────────────────────────
+
+model Organization {
+  id             String   @id @default(cuid())
+  name           String
+  slug           String   @unique
+  plan           Plan     @default(FREE)
+  monthlyBudgetCents Int?
+  currency       String   @default("USD")
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  members       Membership[]
+  providers     ProviderConnection[]
+  usageRecords  UsageRecord[]
+  dailyRollups  DailyRollup[]
+  monthlyRollups MonthlyRollup[]
+  budgets       Budget[]
+  alertEvents   AlertEvent[]
+  invites       Invite[]
+  syncJobs      SyncJob[]
+  subscriptions Subscription[]
+  apiKeys       ApiKey[]
+
+  @@map("organizations")
+}
+
+model User {
+  id           String    @id @default(cuid())
+  email        String    @unique
+  name         String?
+  passwordHash String?
+  googleId     String?   @unique
+  avatarUrl    String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  memberships  Membership[]
+  sentInvites  Invite[]     @relation("InvitedBy")
+  oauthStates  OAuthState[]
+
+  @@map("users")
+}
+
+model Membership {
+  id             String     @id @default(cuid())
+  userId         String
+  organizationId String
+  role           MemberRole @default(MEMBER)
+  team           String? // optional team/department tag, used for cost-by-team analytics
+  createdAt      DateTime   @default(now())
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, organizationId])
+  @@index([organizationId])
+  @@map("memberships")
+}
+
+model Invite {
+  id             String        @id @default(cuid())
+  organizationId String
+  email          String
+  role           MemberRole    @default(MEMBER)
+  team           String?
+  token          String        @unique
+  status         InviteStatus  @default(PENDING)
+  invitedById    String
+  expiresAt      DateTime
+  createdAt      DateTime      @default(now())
+  organization   Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  invitedBy      User          @relation("InvitedBy", fields: [invitedById], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, email])
+  @@index([email])
+  @@map("invites")
+}
+
+// ─────────────────────────────────────────────────────────────
+// Provider connections (API keys encrypted with AES-256-GCM)
+// ─────────────────────────────────────────────────────────────
+
+model ProviderConnection {
+  id               String       @id @default(cuid())
+  organizationId   String
+  provider         Provider
+  name             String       @default("Primary")
+  apiKeyCiphertext String // AES-256-GCM: iv:tag:ciphertext, hex-encoded
+  keyLast4         String
+  status           ConnectionStatus @default(ACTIVE)
+  lastSyncedAt     DateTime?
+  lastSyncError    String?
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
+  organization     Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  usageRecords UsageRecord[]
+  syncJobs     SyncJob[]
+
+  @@unique([organizationId, provider, name])
+  @@index([organizationId])
+  @@map("provider_connections")
+}
+
+// ─────────────────────────────────────────────────────────────
+// Usage data
+// ─────────────────────────────────────────────────────────────
+
+model UsageRecord {
+  id             String   @id @default(cuid())
+  organizationId String
+  connectionId   String?
+  provider       Provider
+  model          String
+  inputTokens    BigInt   @default(0)
+  outputTokens   BigInt   @default(0)
+  costCents      Float    @default(0) // precise cost in cents, computed at ingest
+  requests       Int      @default(1)
+  team           String? // denormalized user/team tag when the provider exposes it
+  timestamp      DateTime
+  createdAt      DateTime @default(now())
+  organization   Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  connection     ProviderConnection? @relation(fields: [connectionId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, timestamp])
+  @@index([organizationId, provider, timestamp])
+  @@index([connectionId])
+  @@map("usage_records")
+}
+
+// Pre-aggregated daily rollups — the dashboards read from these tables so
+// chart queries stay sub-second regardless of raw record volume.
+model DailyRollup {
+  id             String   @id @default(cuid())
+  organizationId String
+  day            DateTime @db.Date
+  provider       Provider
+  model          String
+  team           String?
+  inputTokens    BigInt   @default(0)
+  outputTokens   BigInt   @default(0)
+  costCents      Float    @default(0)
+  requests       Int      @default(0)
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, day, provider, model, team])
+  @@index([organizationId, day])
+  @@map("daily_rollups")
+}
+
+model MonthlyRollup {
+  id             String   @id @default(cuid())
+  organizationId String
+  month          DateTime @db.Date // first day of month
+  provider       Provider
+  model          String
+  team           String?
+  inputTokens    BigInt   @default(0)
+  outputTokens   BigInt   @default(0)
+  costCents      Float    @default(0)
+  requests       Int      @default(0)
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, month, provider, model, team])
+  @@index([organizationId, month])
+  @@map("monthly_rollups")
+}
+
+// ─────────────────────────────────────────────────────────────
+// Budgets & alerts
+// ─────────────────────────────────────────────────────────────
+
+model Budget {
+  id             String    @id @default(cuid())
+  organizationId String
+  team           String? // null = organization-wide budget
+  amountCents    Int
+  period         BudgetPeriod @default(MONTHLY)
+  alert80SentAt  DateTime?
+  alert100SentAt DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, team])
+  @@map("budgets")
+}
+
+model AlertEvent {
+  id             String     @id @default(cuid())
+  organizationId String
+  type           AlertType
+  team           String?
+  message        String
+  metadata       Json?
+  readAt         DateTime?
+  createdAt      DateTime   @default(now())
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, createdAt])
+  @@map("alert_events")
+}
+
+// ─────────────────────────────────────────────────────────────
+// Sync jobs (worker bookkeeping)
+// ─────────────────────────────────────────────────────────────
+
+model SyncJob {
+  id             String   @id @default(cuid())
+  organizationId String
+  connectionId   String
+  status         SyncStatus @default(QUEUED)
+  startedAt      DateTime?
+  finishedAt     DateTime?
+  recordsIngested Int     @default(0)
+  error          String?
+  createdAt      DateTime @default(now())
+  organization   Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  connection     ProviderConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+
+  @@index([connectionId, createdAt])
+  @@map("sync_jobs")
+}
+
+// ─────────────────────────────────────────────────────────────
+// Billing (ObserveMetrics' own Stripe subscriptions)
+// ─────────────────────────────────────────────────────────────
+
+model Subscription {
+  id                   String   @id @default(cuid())
+  organizationId       String
+  stripeCustomerId     String
+  stripeSubscriptionId String   @unique
+  plan                 Plan
+  status               String // trialing, active, past_due, canceled, ...
+  currentPeriodStart   DateTime?
+  currentPeriodEnd     DateTime?
+  cancelAtPeriodEnd    Boolean  @default(false)
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+  organization         Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+  @@map("subscriptions")
+}
+
+// ─────────────────────────────────────────────────────────────
+// Auth helpers (OAuth CSRF state)
+// ─────────────────────────────────────────────────────────────
+
+model OAuthState {
+  state      String   @id
+  createdAt  DateTime @default(now())
+  expiresAt  DateTime
+  userId     String?
+  user       User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("oauth_states")
+}
+
+// ─────────────────────────────────────────────────────────────
+// API keys (programmatic access)
+// ─────────────────────────────────────────────────────────────
+
+model ApiKey {
+  id             String    @id @default(cuid())
+  organizationId String
+  name           String
+  keyHash        String    @unique // sha256 — raw key shown once at creation
+  prefix         String // first 8 chars for lookup/display
+  lastUsedAt     DateTime?
+  revokedAt      DateTime?
+  createdAt      DateTime  @default(now())
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+  @@map("api_keys")
+}
+
+// ─────────────────────────────────────────────────────────────
+// Enums
+// ─────────────────────────────────────────────────────────────
+
+enum Plan {
+  FREE
+  STARTER
+  GROWTH
+  @@map("plan")
+}
+
+enum MemberRole {
+  ADMIN
+  MEMBER
+  @@map("member_role")
+}
+
+enum Provider {
+  OPENAI
+  ANTHROPIC
+  GOOGLE
+  MISTRAL
+  DEMO
+  @@map("provider")
+}
+
+enum ConnectionStatus {
+  ACTIVE
+  ERROR
+  DISABLED
+  @@map("connection_status")
+}
+
+enum InviteStatus {
+  PENDING
+  ACCEPTED
+  REVOKED
+  @@map("invite_status")
+}
+
+enum BudgetPeriod {
+  MONTHLY
+  @@map("budget_period")
+}
+
+enum AlertType {
+  BUDGET_80
+  BUDGET_100
+  SYNC_FAILURE
+  @@map("alert_type")
+}
+
+enum SyncStatus {
+  QUEUED
+  RUNNING
+  SUCCESS
+  FAILED
+  @@map("sync_status")
+}
