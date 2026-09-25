@@ -33,6 +33,7 @@ export default function BillingPage() {
 
   const currentPlan = me.activeOrg?.plan ?? "FREE";
   const isAdmin = me.activeOrg?.role === "ADMIN";
+  const billingReady = me.billingEnabled;
 
   async function checkout(plan: string) {
     setBusyPlan(plan);
@@ -72,11 +73,19 @@ export default function BillingPage() {
         title="Billing"
         subtitle={"ObserveMetrics subscription for " + (me.activeOrg?.name ?? "")}
         actions={
-          currentPlan !== "FREE" && isAdmin ? (
+          billingReady && currentPlan !== "FREE" && isAdmin ? (
             <button onClick={openPortal} className="btn btn-outline">Manage subscription</button>
           ) : undefined
         }
       />
+
+      {!billingReady && (
+        <div className="panel mb-4 p-4 text-sm muted">
+          ⚙️ Stripe is not configured on this deployment, so plan changes are disabled. Everyone is on
+          the <strong>Free</strong> plan — set <code>STRIPE_SECRET_KEY</code> and the price IDs (see
+          DEPLOYMENT.md) to enable upgrades. Budgets &amp; exports below still reflect the current plan.
+        </div>
+      )}
 
       {error && <p className="mb-4 rounded-lg bg-red-500/10 px-3 py-2 text-sm text-red-500">{error}</p>}
 
@@ -100,12 +109,12 @@ export default function BillingPage() {
                   </li>
                 ))}
               </ul>
-              {isAdmin && !isCurrent && p.id !== "FREE" && (
+              {isAdmin && !isCurrent && p.id !== "FREE" && billingReady && (
                 <button onClick={() => checkout(p.id)} disabled={busyPlan !== null} className="btn btn-primary mt-6 w-full disabled:opacity-60">
                   {busyPlan === p.id ? "Redirecting…" : "Upgrade to " + p.name}
                 </button>
               )}
-              {isAdmin && isCurrent && currentPlan !== "FREE" && (
+              {isAdmin && isCurrent && currentPlan !== "FREE" && billingReady && (
                 <button onClick={openPortal} disabled={busyPlan !== null} className="btn btn-outline mt-6 w-full">
                   {busyPlan === "portal" ? "Opening…" : "Manage in Stripe"}
                 </button>

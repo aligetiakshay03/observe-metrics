@@ -2,6 +2,7 @@ import { prisma } from "@/lib/db";
 import { ok, errors, handler } from "@/lib/api";
 import { getCurrentUser, resolveActiveOrg } from "@/lib/auth";
 import { planOf } from "@/lib/plans";
+import { billingEnabled } from "@/lib/stripe";
 
 export const GET = handler(async (req) => {
   const user = await getCurrentUser();
@@ -16,6 +17,7 @@ export const GET = handler(async (req) => {
   });
 
   return ok({
+    billingEnabled: billingEnabled(),
     user: { id: user.id, name: user.name, email: user.email, avatarUrl: user.avatarUrl },
     organizations: memberships.map((m) => ({
       id: m.organization.id,

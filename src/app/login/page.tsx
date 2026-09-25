@@ -23,7 +23,9 @@ export default function LoginPage() {
       });
       const json = await res.json();
       if (!res.ok) throw new Error(json.error?.message ?? "Login failed");
-      router.push("/dashboard");
+      // Honor ?next= from the middleware redirect, defaulting to the dashboard.
+      const next = new URLSearchParams(window.location.search).get("next");
+      router.push(next && next.startsWith("/") ? next : "/dashboard");
       router.refresh();
     } catch (err) {
       setError((err as Error).message);

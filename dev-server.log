@@ -1,0 +1,45 @@
+  ▲ Next.js 14.2.35
+  - Local:        http://localhost:3100
+  - Environments: .env
+
+ ✓ Starting...
+ ✓ Ready in 2.3s
+ ○ Compiling / ...
+ ✓ Compiled / in 3.6s (506 modules)
+ GET / 200 in 3744ms
+ GET / 200 in 82ms
+ ○ Compiling /invite/[token] ...
+ ✓ Compiled /invite/[token] in 1201ms (500 modules)
+ GET /invite/badtoken 200 in 3565ms
+ ○ Compiling /api/v1/auth/login ...
+ ✓ Compiled /api/v1/auth/login in 3.5s (463 modules)
+ POST /api/v1/auth/login 200 in 4293ms
+ ○ Compiling /src/middleware ...
+ ✓ Compiled /src/middleware in 931ms (72 modules)
+ ○ Compiling /dashboard ...
+ ✓ Compiled /dashboard in 10.3s (1787 modules)
+ GET /dashboard 200 in 10996ms
+ ○ Compiling /dashboard/tokens ...
+ ✓ Compiled /dashboard/tokens in 17.2s (1793 modules)
+ GET /dashboard/tokens 200 in 18111ms
+ ○ Compiling /dashboard/costs ...
+ ✓ Compiled /dashboard/costs in 1092ms (1799 modules)
+ GET /dashboard/costs 200 in 1289ms
+ ○ Compiling /dashboard/budgets ...
+ ✓ Compiled /dashboard/budgets in 910ms (1805 modules)
+ GET /dashboard/budgets 200 in 1025ms
+ ○ Compiling /dashboard/settings ...
+ ✓ Compiled /dashboard/settings in 1257ms (1817 modules)
+ GET /dashboard/settings 200 in 1410ms
+ ○ Compiling /dashboard/billing ...
+ ✓ Compiled /dashboard/billing in 1065ms (1823 modules)
+ GET /dashboard/billing 200 in 1207ms
+ ✓ Compiled in 1389ms (795 modules)
+ ✓ Compiled in 1025ms (795 modules)
+ ✓ Compiled in 386ms (795 modules)
+ ✓ Compiled /invite/[token] in 506ms (226 modules)
+ GET /invite/badtoken 200 in 1967ms
+ ✓ Compiled /dashboard/billing in 90ms (361 modules)
+ GET /dashboard/billing 200 in 248ms
+ GET /invite/badtoken 200 in 1158ms
+ ✓ Compiled /api/v1/invite/[token] in 307ms (473 modules)

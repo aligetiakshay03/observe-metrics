@@ -147,14 +147,25 @@ export function ForecastLine({
 }: {
   data: { month: string; spendUsd: number; projected: boolean }[];
 }) {
+  // Split into actual (solid) and projected (dashed) series. The dashed series
+  // also carries the last actual point so the two lines connect visually.
+  const lastActualIdx = data.reduce((acc, d, i) => (d.projected ? acc : i), 0);
+  const mapped = data.map((d, i) => ({
+    month: d.month,
+    actual: d.projected ? null : d.spendUsd,
+    projected:
+      d.projected || i === lastActualIdx ? d.spendUsd : null,
+  }));
   return (
     <ResponsiveContainer width="100%" height={260}>
-      <LineChart data={data} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+      <LineChart data={mapped} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
         <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
         <XAxis dataKey="month" tick={axisStyle} tickLine={false} axisLine={false} />
         <YAxis tick={axisStyle} tickLine={false} axisLine={false} width={56} tickFormatter={(v: number) => "$" + compact(v)} />
         <Tooltip {...tooltipStyle()} formatter={(value: number | string) => ["$" + Number(value).toFixed(2), "Spend"]} />
-        <Line type="monotone" dataKey="spendUsd" stroke="#6366f1" strokeWidth={2} dot={{ r: 3 }} />
+        <Line type="monotone" dataKey="actual" stroke="#6366f1" strokeWidth={2} dot={{ r: 3 }} connectNulls={false} name="Actual" />
+        <Line type="monotone" dataKey="projected" stroke="#818cf8" strokeWidth={2} strokeDasharray="6 6" dot={{ r: 3 }} connectNulls={true} name="Projected" />
+        <Legend wrapperStyle={{ fontSize: 12 }} />
       </LineChart>
     </ResponsiveContainer>
   );

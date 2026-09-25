@@ -51,6 +51,8 @@ export default function BudgetsPage() {
     void load();
   }, [me, sessionLoading, load]);
 
+  void refresh; // session refresh is triggered by mutations in Settings
+
   const budgetsEnabled = me?.activeOrg?.limits?.budgets ?? false;
   const isAdmin = me?.activeOrg?.role === "ADMIN";
 
@@ -199,7 +201,6 @@ export default function BudgetsPage() {
           </Panel>
         </div>
       </div>
-      <button className="hidden" onClick={refresh} />
     </div>
   );
 }

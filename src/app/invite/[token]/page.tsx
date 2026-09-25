@@ -1,7 +1,7 @@
 "use client";
 
-import { use, useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useEffect, useState } from "react";
+import { useParams, useRouter } from "next/navigation";
 
 interface InviteInfo {
   email: string;
@@ -10,8 +10,9 @@ interface InviteInfo {
   organization: { name: string; slug: string };
 }
 
-export default function InvitePage({ params }: { params: Promise<{ token: string }> }) {
-  const { token } = use(params);
+export default function InvitePage() {
+  // Client hook works whether params is a plain object (Next 14) or a promise (Next 15).
+  const { token } = useParams<{ token: string }>();
   const router = useRouter();
   const [info, setInfo] = useState<InviteInfo | null>(null);
   const [error, setError] = useState<string | null>(null);

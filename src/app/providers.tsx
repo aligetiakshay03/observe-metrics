@@ -22,6 +22,7 @@ export interface OrgSummary {
 }
 
 export interface Me {
+  billingEnabled: boolean;
   user: { id: string; name: string | null; email: string; avatarUrl: string | null };
   organizations: OrgSummary[];
   activeOrg: OrgSummary | null;
