@@ -96,3 +96,5 @@ export const GET = handler(async (req) => {
   );
   return new Response(null, { status: 302, headers });
 });
+
+export const dynamic = "force-dynamic";

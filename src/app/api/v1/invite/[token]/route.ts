@@ -90,3 +90,5 @@ export const POST = handler(async (req: Request, { params }: Params) => {
   });
   return res;
 });
+
+export const dynamic = "force-dynamic";

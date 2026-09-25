@@ -31,3 +31,5 @@ export const GET = handler(async (req) => {
     activeOrg: org ? { id: org.id, name: org.name, slug: org.slug, plan: org.plan } : null,
   });
 });
+
+export const dynamic = "force-dynamic";

@@ -23,3 +23,5 @@ export const POST = handler(async (req: Request, { params }: Params) => {
     return errors.badRequest("Sync failed: " + (e as Error).message);
   }
 });
+
+export const dynamic = "force-dynamic";

@@ -12,3 +12,5 @@ export const POST = handler(async (req) => {
     headers: { "Content-Type": "application/json" },
   });
 });
+
+export const dynamic = "force-dynamic";

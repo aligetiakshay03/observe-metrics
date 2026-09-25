@@ -14,3 +14,5 @@ export const POST = handler(async () => {
   });
   return res;
 });
+
+export const dynamic = "force-dynamic";

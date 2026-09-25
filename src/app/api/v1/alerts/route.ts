@@ -32,3 +32,5 @@ export const POST = handler(async (req) => {
   await prisma.alertEvent.updateMany({ where, data: { readAt: new Date() } });
   return ok({ marked: true });
 });
+
+export const dynamic = "force-dynamic";

@@ -47,3 +47,5 @@ export const DELETE = handler(async (req: Request, { params }: Params) => {
   await prisma.budget.delete({ where: { id: budget.id } });
   return ok({ deleted: true });
 });
+
+export const dynamic = "force-dynamic";

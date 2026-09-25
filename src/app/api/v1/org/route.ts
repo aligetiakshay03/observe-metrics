@@ -33,3 +33,5 @@ export const PATCH = handler(async (req) => {
   });
   return ok({ organization: org });
 });
+
+export const dynamic = "force-dynamic";

@@ -24,3 +24,5 @@ export const GET = handler(async (req) => {
 
   return Response.redirect(authUrl.toString(), 302);
 });
+
+export const dynamic = "force-dynamic";

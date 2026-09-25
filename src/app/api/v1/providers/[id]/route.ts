@@ -63,3 +63,5 @@ export const DELETE = handler(async (req: Request, { params }: Params) => {
   await prisma.providerConnection.delete({ where: { id: conn.id } });
   return ok({ deleted: true });
 });
+
+export const dynamic = "force-dynamic";

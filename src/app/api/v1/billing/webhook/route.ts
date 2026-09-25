@@ -93,3 +93,5 @@ async function upsertSubscription(
     }),
   ]);
 }
+
+export const dynamic = "force-dynamic";

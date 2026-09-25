@@ -44,3 +44,5 @@ export const POST = handler(async (req) => {
   const result = await syncConnection(connection);
   return ok({ ingested: result.ingested, provider: connection.provider });
 });
+
+export const dynamic = "force-dynamic";

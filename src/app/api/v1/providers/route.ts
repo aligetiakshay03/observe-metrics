@@ -71,3 +71,5 @@ export const POST = handler(async (req) => {
 
   return ok({ connection }, { status: 201 });
 });
+
+export const dynamic = "force-dynamic";

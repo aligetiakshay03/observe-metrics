@@ -45,3 +45,5 @@ export const POST = handler(async (req) => {
 
   return ok({ url: session.url });
 });
+
+export const dynamic = "force-dynamic";

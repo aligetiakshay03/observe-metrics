@@ -102,3 +102,5 @@ export const POST = handler(async (req) => {
 
   return ok({ invite: { id: invite.id, email: invite.email, role: invite.role, team: invite.team }, inviteUrl }, { status: 201 });
 });
+
+export const dynamic = "force-dynamic";

@@ -54,3 +54,5 @@ export const POST = handler(async (req) => {
   });
   return ok({ budget }, { status: 201 });
 });
+
+export const dynamic = "force-dynamic";

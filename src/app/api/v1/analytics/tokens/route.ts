@@ -21,3 +21,5 @@ export const GET = handler(async (req) => {
   const data = await getTokenAnalytics(ctx.org.id, { from: effectiveFrom, to: range.to }, provider);
   return ok(data);
 });
+
+export const dynamic = "force-dynamic";

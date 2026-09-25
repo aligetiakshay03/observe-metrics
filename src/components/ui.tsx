@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import React from "react";
+import { IconTrendUp, IconTrendDown } from "./icons";
 
 export function PageHeader(props: {
   title: string;
@@ -26,18 +27,21 @@ export function KpiCard(props: {
   deltaLabel?: string;
   hint?: string;
 }) {
-  const positive = (props.delta ?? 0) <= 0; // for spend, down is good
+  // For spend metrics, a decrease is good (green); an increase is a warning (amber).
+  const positive = (props.delta ?? 0) <= 0;
+  const TrendIcon = props.delta != null && props.delta >= 0 ? IconTrendUp : IconTrendDown;
   return (
-    <div className="panel p-5">
-      <div className="text-xs muted">{props.label}</div>
-      <div className="mt-1.5 text-2xl font-semibold tabular-nums">{props.value}</div>
+    <div className="panel p-5 transition-shadow hover:shadow-[var(--shadow-md)]">
+      <div className="text-[11px] font-medium uppercase tracking-wider muted">{props.label}</div>
+      <div className="mt-2 text-[26px] font-bold leading-none tracking-tight tabular-nums">{props.value}</div>
       {props.delta != null && (
-        <div className="mt-1 text-xs" style={{ color: positive ? "#10b981" : "#f59e0b" }}>
-          {props.delta >= 0 ? "▲" : "▼"} {Math.abs(props.delta).toFixed(1)}%
-          <span className="muted"> {props.deltaLabel ?? "vs previous period"}</span>
+        <div className="mt-2.5 flex items-center gap-1 text-xs font-medium" style={{ color: positive ? "#10b981" : "#f59e0b" }}>
+          <TrendIcon size={13} />
+          {Math.abs(props.delta).toFixed(1)}%
+          <span className="font-normal muted">{props.deltaLabel ?? "vs previous period"}</span>
         </div>
       )}
-      {props.hint && <div className="mt-1 text-xs muted">{props.hint}</div>}
+      {props.hint && <div className="mt-2 text-xs muted">{props.hint}</div>}
     </div>
   );
 }
@@ -46,8 +50,8 @@ export function Panel(props: { title?: string; actions?: React.ReactNode; childr
   return (
     <div className={"panel p-5 " + (props.className ?? "")}>
       {(props.title || props.actions) && (
-        <div className="mb-4 flex items-center justify-between">
-          {props.title && <h2 className="text-sm font-semibold">{props.title}</h2>}
+        <div className="mb-5 flex items-center justify-between gap-3">
+          {props.title && <h2 className="text-[13px] font-semibold uppercase tracking-wider muted">{props.title}</h2>}
           {props.actions}
         </div>
       )}

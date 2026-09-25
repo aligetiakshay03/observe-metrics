@@ -10,3 +10,5 @@ export const POST = handler(async (req) => {
   const result = await syncOrg(ctx.org.id);
   return ok(result);
 });
+
+export const dynamic = "force-dynamic";

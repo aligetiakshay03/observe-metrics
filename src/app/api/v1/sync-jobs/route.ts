@@ -13,3 +13,5 @@ export const GET = handler(async (req) => {
   });
   return ok({ jobs });
 });
+
+export const dynamic = "force-dynamic";

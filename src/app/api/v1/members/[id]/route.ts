@@ -65,3 +65,5 @@ export const DELETE = handler(async (req: Request, { params }: Params) => {
   await prisma.membership.delete({ where: { id: membership.id } });
   return ok({ removed: true });
 });
+
+export const dynamic = "force-dynamic";
