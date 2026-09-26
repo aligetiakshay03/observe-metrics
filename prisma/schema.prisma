@@ -1,6 +1,11 @@
-// ObserveMetrics — multi-tenant AI spend & usage analytics
-// Every domain table carries organizationId so tenancy can be enforced at the
-// query layer (all queries go through src/lib/db.ts helpers that scope by org).
+// ObserveMetrics — AI usage, cost & performance intelligence.
+//
+// Tenancy: every workspace-owned row carries `workspaceId`. All server-side
+// reads go through `src/server/*` helpers that take the workspace id from the
+// authenticated session — never from the client payload.
+//
+// Historical note: the `organizations` / `memberships` tables from 0_init are
+// reused (mapped) as Workspace / WorkspaceMember so no data migration is needed.
 
 generator client {
   provider = "prisma-client-js"
@@ -12,33 +17,8 @@ datasource db {
 }
 
 // ─────────────────────────────────────────────────────────────
-// Organizations & users
+// Identity
 // ─────────────────────────────────────────────────────────────
-
-model Organization {
-  id             String   @id @default(cuid())
-  name           String
-  slug           String   @unique
-  plan           Plan     @default(FREE)
-  monthlyBudgetCents Int?
-  currency       String   @default("USD")
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
-
-  members       Membership[]
-  providers     ProviderConnection[]
-  usageRecords  UsageRecord[]
-  dailyRollups  DailyRollup[]
-  monthlyRollups MonthlyRollup[]
-  budgets       Budget[]
-  alertEvents   AlertEvent[]
-  invites       Invite[]
-  syncJobs      SyncJob[]
-  subscriptions Subscription[]
-  apiKeys       ApiKey[]
-
-  @@map("organizations")
-}
 
 model User {
   id           String    @id @default(cuid())
@@ -47,265 +27,432 @@ model User {
   passwordHash String?
   googleId     String?   @unique
   avatarUrl    String?
+  /// Guest users are created for the anonymous "View demo" flow and expire.
+  isGuest      Boolean   @default(false)
+  lastLoginAt  DateTime?
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
 
-  memberships  Membership[]
-  sentInvites  Invite[]     @relation("InvitedBy")
-  oauthStates  OAuthState[]
+  memberships    WorkspaceMember[]
+  sentInvites    Invite[]              @relation("InvitedBy")
+  oauthStates    OAuthState[]
+  sessions       Session[]
+  resetTokens    PasswordResetToken[]
+  notifications  Notification[]
+  auditLogs      AuditLog[]            @relation("AuditActor")
 
   @@map("users")
 }
 
-model Membership {
-  id             String     @id @default(cuid())
-  userId         String
-  organizationId String
-  role           MemberRole @default(MEMBER)
-  team           String? // optional team/department tag, used for cost-by-team analytics
-  createdAt      DateTime   @default(now())
-  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
-  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+/// Server-side sessions. The cookie holds a random token; only its SHA-256
+/// hash is stored, so a database leak does not yield usable sessions.
+model Session {
+  id         String   @id @default(cuid())
+  userId     String
+  tokenHash  String   @unique
+  expiresAt  DateTime
+  remember   Boolean  @default(false)
+  userAgent  String?
+  ip         String?
+  lastSeenAt DateTime @default(now())
+  createdAt  DateTime @default(now())
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  @@unique([userId, organizationId])
-  @@index([organizationId])
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("sessions")
+}
+
+model PasswordResetToken {
+  id        String    @id @default(cuid())
+  userId    String
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("password_reset_tokens")
+}
+
+model OAuthState {
+  state     String   @id
+  createdAt DateTime @default(now())
+  expiresAt DateTime
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("oauth_states")
+}
+
+// ─────────────────────────────────────────────────────────────
+// Workspaces & members
+// ─────────────────────────────────────────────────────────────
+
+model Workspace {
+  id                    String    @id @default(cuid())
+  name                  String
+  slug                  String    @unique
+  companyName           String?
+  currency              String    @default("USD")
+  /// Demo workspaces hold generated sample data and are always labelled as such.
+  isDemo                Boolean   @default(false)
+  onboardingCompletedAt DateTime?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  members        WorkspaceMember[]
+  invites        Invite[]
+  providers      ProviderConnection[]
+  syncJobs       SyncJob[]
+  ingestionKeys  IngestionKey[]
+  teams          Team[]
+  applications   Application[]
+  usageEvents    UsageEvent[]
+  dailyUsage     DailyUsage[]
+  budgets        Budget[]
+  insights       Insight[]
+  alerts         Alert[]
+  notifications  Notification[]
+  auditLogs      AuditLog[]
+
+  @@map("organizations")
+}
+
+model WorkspaceMember {
+  id                String       @id @default(cuid())
+  userId            String
+  workspaceId       String       @map("organizationId")
+  role              MemberRole   @default(MEMBER)
+  /// Job function chosen during onboarding (Founder, CTO, Engineering, …).
+  jobFunction       String?
+  teamId            String?
+  notificationPrefs Json?
+  createdAt         DateTime     @default(now())
+  user              User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workspace         Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  team              Team?        @relation(fields: [teamId], references: [id], onDelete: SetNull)
+
+  @@unique([userId, workspaceId])
+  @@index([workspaceId])
   @@map("memberships")
 }
 
 model Invite {
-  id             String        @id @default(cuid())
-  organizationId String
-  email          String
-  role           MemberRole    @default(MEMBER)
-  team           String?
-  token          String        @unique
-  status         InviteStatus  @default(PENDING)
-  invitedById    String
-  expiresAt      DateTime
-  createdAt      DateTime      @default(now())
-  organization   Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  invitedBy      User          @relation("InvitedBy", fields: [invitedById], references: [id], onDelete: Cascade)
+  id          String       @id @default(cuid())
+  workspaceId String       @map("organizationId")
+  email       String
+  role        MemberRole   @default(MEMBER)
+  token       String       @unique
+  status      InviteStatus @default(PENDING)
+  invitedById String
+  expiresAt   DateTime
+  createdAt   DateTime     @default(now())
+  workspace   Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  invitedBy   User         @relation("InvitedBy", fields: [invitedById], references: [id], onDelete: Cascade)
 
-  @@unique([organizationId, email])
+  @@unique([workspaceId, email])
   @@index([email])
   @@map("invites")
 }
 
 // ─────────────────────────────────────────────────────────────
-// Provider connections (API keys encrypted with AES-256-GCM)
+// Attribution dimensions
+// ─────────────────────────────────────────────────────────────
+
+model Team {
+  id          String   @id @default(cuid())
+  workspaceId String
+  name        String
+  slug        String
+  createdAt   DateTime @default(now())
+  workspace   Workspace         @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  members     WorkspaceMember[]
+  apps        Application[]
+
+  @@unique([workspaceId, slug])
+  @@map("teams")
+}
+
+model Application {
+  id          String   @id @default(cuid())
+  workspaceId String
+  name        String
+  slug        String
+  description String?
+  teamId      String?
+  createdAt   DateTime @default(now())
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  team        Team?     @relation(fields: [teamId], references: [id], onDelete: SetNull)
+
+  @@unique([workspaceId, slug])
+  @@map("applications")
+}
+
+// ─────────────────────────────────────────────────────────────
+// Provider connections & sync
 // ─────────────────────────────────────────────────────────────
 
 model ProviderConnection {
-  id               String       @id @default(cuid())
-  organizationId   String
+  id               String           @id @default(cuid())
+  workspaceId      String           @map("organizationId")
   provider         Provider
-  name             String       @default("Primary")
-  apiKeyCiphertext String // AES-256-GCM: iv:tag:ciphertext, hex-encoded
+  name             String           @default("Primary")
+  /// Sealed with AES-256-GCM, bound to the workspace id (see src/server/secrets.ts).
+  apiKeyCiphertext String
   keyLast4         String
   status           ConnectionStatus @default(ACTIVE)
+  syncStatus       SyncStatus       @default(IDLE)
   lastSyncedAt     DateTime?
   lastSyncError    String?
-  createdAt        DateTime     @default(now())
-  updatedAt        DateTime     @updatedAt
-  organization     Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  lastTestedAt     DateTime?
+  nextSyncAt       DateTime?
+  modelCount       Int?
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+  workspace        Workspace        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  syncJobs         SyncJob[]
 
-  usageRecords UsageRecord[]
-  syncJobs     SyncJob[]
-
-  @@unique([organizationId, provider, name])
-  @@index([organizationId])
+  @@unique([workspaceId, provider, name])
+  @@index([workspaceId])
+  @@index([nextSyncAt])
   @@map("provider_connections")
+}
+
+/// Postgres-backed job queue. Workers claim rows with FOR UPDATE SKIP LOCKED.
+model SyncJob {
+  id              String     @id @default(cuid())
+  workspaceId     String     @map("organizationId")
+  connectionId    String
+  status          SyncStatus @default(QUEUED)
+  trigger         String     @default("manual")
+  attempts        Int        @default(0)
+  runAfter        DateTime   @default(now())
+  startedAt       DateTime?
+  finishedAt      DateTime?
+  recordsIngested Int        @default(0)
+  error           String?
+  createdAt       DateTime   @default(now())
+  workspace       Workspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  connection      ProviderConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+
+  @@index([connectionId, createdAt])
+  @@index([status, runAfter])
+  @@map("sync_jobs")
+}
+
+/// Workspace ingestion keys for POST /api/v1/events. Only a SHA-256 hash is stored.
+model IngestionKey {
+  id          String    @id @default(cuid())
+  workspaceId String    @map("organizationId")
+  name        String
+  keyHash     String    @unique
+  prefix      String
+  createdById String?
+  lastUsedAt  DateTime?
+  revokedAt   DateTime?
+  createdAt   DateTime  @default(now())
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
+  @@map("api_keys")
 }
 
 // ─────────────────────────────────────────────────────────────
 // Usage data
 // ─────────────────────────────────────────────────────────────
 
-model UsageRecord {
-  id             String   @id @default(cuid())
-  organizationId String
+/// Normalized usage. One row is either a single instrumented request
+/// (requestCount = 1) or a provider-reported aggregate bucket.
+model UsageEvent {
+  id             String      @id @default(cuid())
+  workspaceId    String
+  source         UsageSource
   connectionId   String?
-  provider       Provider
+  provider       String
   model          String
-  inputTokens    BigInt   @default(0)
-  outputTokens   BigInt   @default(0)
-  costCents      Float    @default(0) // precise cost in cents, computed at ingest
-  requests       Int      @default(1)
-  team           String? // denormalized user/team tag when the provider exposes it
+  applicationId  String?
+  teamId         String?
+  userRef        String?
   timestamp      DateTime
-  createdAt      DateTime @default(now())
-  organization   Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  connection     ProviderConnection? @relation(fields: [connectionId], references: [id], onDelete: SetNull)
+  requestCount   Int         @default(1)
+  errorCount     Int         @default(0)
+  inputTokens    BigInt      @default(0)
+  outputTokens   BigInt      @default(0)
+  cachedTokens   BigInt      @default(0)
+  costUsd        Float       @default(0)
+  costSource     CostSource
+  /// Sum of latencies for the requests in this row; null when unknown.
+  latencyMsSum   Float?
+  status         String      @default("success")
+  errorCode      String?
+  requestId      String?
+  promptHash     String?
+  /// Idempotency key — provider buckets and client request ids upsert on this.
+  dedupeKey      String
+  createdAt      DateTime    @default(now())
+  workspace      Workspace   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
-  @@index([organizationId, timestamp])
-  @@index([organizationId, provider, timestamp])
-  @@index([connectionId])
-  @@map("usage_records")
+  @@unique([workspaceId, dedupeKey])
+  @@index([workspaceId, timestamp])
+  @@index([workspaceId, model, timestamp])
+  @@index([workspaceId, applicationId, timestamp])
+  @@index([workspaceId, promptHash])
+  @@map("usage_events")
 }
 
-// Pre-aggregated daily rollups — the dashboards read from these tables so
-// chart queries stay sub-second regardless of raw record volume.
-model DailyRollup {
-  id             String   @id @default(cuid())
-  organizationId String
+/// Daily aggregates rebuilt from usage_events (never incremented in place),
+/// so re-syncing a window can never double count.
+model DailyUsage {
+  workspaceId    String
   day            DateTime @db.Date
-  provider       Provider
+  provider       String
   model          String
-  team           String?
+  /// "" when unattributed (keeps the composite key non-null).
+  applicationId  String   @default("")
+  teamId         String   @default("")
+  requests       Int      @default(0)
+  errors         Int      @default(0)
   inputTokens    BigInt   @default(0)
   outputTokens   BigInt   @default(0)
-  costCents      Float    @default(0)
-  requests       Int      @default(0)
-  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  costUsd        Float    @default(0)
+  reportedCostUsd Float   @default(0)
+  latencyMsSum   Float    @default(0)
+  latencyCount   Int      @default(0)
+  workspace      Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
-  @@unique([organizationId, day, provider, model, team])
-  @@index([organizationId, day])
-  @@map("daily_rollups")
-}
-
-model MonthlyRollup {
-  id             String   @id @default(cuid())
-  organizationId String
-  month          DateTime @db.Date // first day of month
-  provider       Provider
-  model          String
-  team           String?
-  inputTokens    BigInt   @default(0)
-  outputTokens   BigInt   @default(0)
-  costCents      Float    @default(0)
-  requests       Int      @default(0)
-  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-
-  @@unique([organizationId, month, provider, model, team])
-  @@index([organizationId, month])
-  @@map("monthly_rollups")
+  @@id([workspaceId, day, provider, model, applicationId, teamId])
+  @@index([workspaceId, day])
+  @@map("daily_usage")
 }
 
 // ─────────────────────────────────────────────────────────────
-// Budgets & alerts
+// Budgets, insights, alerts, notifications, audit
 // ─────────────────────────────────────────────────────────────
 
 model Budget {
-  id             String    @id @default(cuid())
-  organizationId String
-  team           String? // null = organization-wide budget
-  amountCents    Int
-  period         BudgetPeriod @default(MONTHLY)
-  alert80SentAt  DateTime?
-  alert100SentAt DateTime?
-  createdAt      DateTime  @default(now())
-  updatedAt      DateTime  @updatedAt
-  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  id              String      @id @default(cuid())
+  workspaceId     String
+  name            String
+  scope           BudgetScope
+  teamId          String?
+  applicationId   String?
+  amountUsd       Float
+  period          String      @default("monthly")
+  thresholds      Int[]       @default([80, 100])
+  notify          Boolean     @default(true)
+  /// Highest threshold already alerted for `alertedPeriod` (e.g. "2026-09").
+  alertedThreshold Int?
+  alertedPeriod   String?
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+  workspace       Workspace   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
-  @@unique([organizationId, team])
+  @@index([workspaceId])
   @@map("budgets")
 }
 
-model AlertEvent {
-  id             String     @id @default(cuid())
-  organizationId String
-  type           AlertType
-  team           String?
-  message        String
-  metadata       Json?
-  readAt         DateTime?
-  createdAt      DateTime   @default(now())
-  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+model Insight {
+  id                 String          @id @default(cuid())
+  workspaceId        String
+  type               String
+  severity           Severity
+  status             InsightStatus   @default(OPEN)
+  title              String
+  summary            String
+  whatHappened       String
+  whyItMatters       String
+  cause              String
+  recommendation     String
+  provider           String?
+  model              String?
+  teamId             String?
+  applicationId      String?
+  metrics            Json
+  trend              Json?
+  estimatedImpactUsd Float?
+  impactKind         String?
+  windowStart        DateTime
+  windowEnd          DateTime
+  fingerprint        String
+  detectedAt         DateTime        @default(now())
+  updatedAt          DateTime        @updatedAt
+  workspace          Workspace       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  alerts             Alert[]
 
-  @@index([organizationId, createdAt])
-  @@map("alert_events")
+  @@unique([workspaceId, fingerprint])
+  @@index([workspaceId, status, detectedAt])
+  @@map("insights")
 }
 
-// ─────────────────────────────────────────────────────────────
-// Sync jobs (worker bookkeeping)
-// ─────────────────────────────────────────────────────────────
+model Alert {
+  id           String        @id @default(cuid())
+  workspaceId  String
+  category     AlertCategory
+  severity     Severity
+  title        String
+  message      String
+  insightId    String?
+  budgetId     String?
+  connectionId String?
+  href         String?
+  fingerprint  String
+  readAt       DateTime?
+  resolvedAt   DateTime?
+  createdAt    DateTime      @default(now())
+  workspace    Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  insight      Insight?      @relation(fields: [insightId], references: [id], onDelete: SetNull)
 
-model SyncJob {
-  id             String   @id @default(cuid())
-  organizationId String
-  connectionId   String
-  status         SyncStatus @default(QUEUED)
-  startedAt      DateTime?
-  finishedAt     DateTime?
-  recordsIngested Int     @default(0)
-  error          String?
-  createdAt      DateTime @default(now())
-  organization   Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  connection     ProviderConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
-
-  @@index([connectionId, createdAt])
-  @@map("sync_jobs")
+  @@unique([workspaceId, fingerprint])
+  @@index([workspaceId, createdAt])
+  @@map("alerts")
 }
 
-// ─────────────────────────────────────────────────────────────
-// Billing (ObserveMetrics' own Stripe subscriptions)
-// ─────────────────────────────────────────────────────────────
+model Notification {
+  id          String    @id @default(cuid())
+  workspaceId String
+  userId      String
+  kind        String
+  title       String
+  body        String
+  href        String?
+  readAt      DateTime?
+  createdAt   DateTime  @default(now())
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-model Subscription {
-  id                   String   @id @default(cuid())
-  organizationId       String
-  stripeCustomerId     String
-  stripeSubscriptionId String   @unique
-  plan                 Plan
-  status               String // trialing, active, past_due, canceled, ...
-  currentPeriodStart   DateTime?
-  currentPeriodEnd     DateTime?
-  cancelAtPeriodEnd    Boolean  @default(false)
-  createdAt            DateTime @default(now())
-  updatedAt            DateTime @updatedAt
-  organization         Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-
-  @@index([organizationId])
-  @@map("subscriptions")
+  @@index([userId, workspaceId, createdAt])
+  @@map("notifications")
 }
 
-// ─────────────────────────────────────────────────────────────
-// Auth helpers (OAuth CSRF state)
-// ─────────────────────────────────────────────────────────────
+model AuditLog {
+  id          String    @id @default(cuid())
+  workspaceId String
+  actorId     String?
+  action      String
+  targetType  String?
+  targetId    String?
+  metadata    Json?
+  ip          String?
+  createdAt   DateTime  @default(now())
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  actor       User?     @relation("AuditActor", fields: [actorId], references: [id], onDelete: SetNull)
 
-model OAuthState {
-  state      String   @id
-  createdAt  DateTime @default(now())
-  expiresAt  DateTime
-  userId     String?
-  user       User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@map("oauth_states")
-}
-
-// ─────────────────────────────────────────────────────────────
-// API keys (programmatic access)
-// ─────────────────────────────────────────────────────────────
-
-model ApiKey {
-  id             String    @id @default(cuid())
-  organizationId String
-  name           String
-  keyHash        String    @unique // sha256 — raw key shown once at creation
-  prefix         String // first 8 chars for lookup/display
-  lastUsedAt     DateTime?
-  revokedAt      DateTime?
-  createdAt      DateTime  @default(now())
-  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-
-  @@index([organizationId])
-  @@map("api_keys")
+  @@index([workspaceId, createdAt])
+  @@map("audit_logs")
 }
 
 // ─────────────────────────────────────────────────────────────
 // Enums
 // ─────────────────────────────────────────────────────────────
 
-enum Plan {
-  FREE
-  STARTER
-  GROWTH
-  @@map("plan")
-}
-
 enum MemberRole {
+  OWNER
   ADMIN
   MEMBER
+  VIEWER
+
   @@map("member_role")
 }
 
@@ -315,6 +462,7 @@ enum Provider {
   GOOGLE
   MISTRAL
   DEMO
+
   @@map("provider")
 }
 
@@ -322,6 +470,7 @@ enum ConnectionStatus {
   ACTIVE
   ERROR
   DISABLED
+
   @@map("connection_status")
 }
 
@@ -329,25 +478,67 @@ enum InviteStatus {
   PENDING
   ACCEPTED
   REVOKED
+
   @@map("invite_status")
 }
 
-enum BudgetPeriod {
-  MONTHLY
-  @@map("budget_period")
-}
-
-enum AlertType {
-  BUDGET_80
-  BUDGET_100
-  SYNC_FAILURE
-  @@map("alert_type")
-}
-
 enum SyncStatus {
+  IDLE
   QUEUED
   RUNNING
   SUCCESS
   FAILED
+
   @@map("sync_status")
+}
+
+enum UsageSource {
+  PROVIDER_SYNC
+  INGEST_API
+  DEMO
+
+  @@map("usage_source")
+}
+
+enum CostSource {
+  PROVIDER_REPORTED
+  CALCULATED
+  DEMO
+
+  @@map("cost_source")
+}
+
+enum BudgetScope {
+  WORKSPACE
+  TEAM
+  APPLICATION
+
+  @@map("budget_scope")
+}
+
+enum Severity {
+  CRITICAL
+  WARNING
+  INFO
+
+  @@map("severity")
+}
+
+enum InsightStatus {
+  OPEN
+  DISMISSED
+  RESOLVED
+
+  @@map("insight_status")
+}
+
+enum AlertCategory {
+  BUDGET
+  COST_ANOMALY
+  LATENCY
+  ERROR
+  PROVIDER_SYNC
+  OPTIMIZATION
+
+  @@map("alert_category")
 }

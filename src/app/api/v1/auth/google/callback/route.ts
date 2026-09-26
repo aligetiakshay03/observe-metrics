@@ -1,100 +1,67 @@
-import { prisma } from "@/lib/db";
-import { handler, errors } from "@/lib/api";
-import { createSessionToken } from "@/lib/jwt";
-import { SESSION_COOKIE } from "@/lib/auth";
+import { NextResponse } from "next/server";
+import { prisma } from "@/server/db";
+import { clientIp, route } from "@/server/http";
+import { env } from "@/server/env";
+import { createSession, setSessionCookie } from "@/server/auth/session";
+import { logger } from "@/server/log";
 
-interface GoogleTokenResponse {
-  access_token: string;
-  id_token?: string;
+const log = logger("oauth");
+
+function fail(reason: string) {
+  return NextResponse.redirect(`${env.appUrl}/signin?error=${encodeURIComponent(reason)}`, 302);
 }
 
-interface GoogleUserInfo {
-  sub: string;
-  email: string;
-  name?: string;
-  picture?: string;
-}
-
-export const GET = handler(async (req) => {
-  const clientId = process.env.GOOGLE_CLIENT_ID;
-  const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
-  if (!clientId || !clientSecret) return errors.badRequest("Google OAuth is not configured");
-
+export const GET = route(async (req) => {
+  if (!env.googleAuthEnabled) return fail("google_unavailable");
   const url = new URL(req.url);
   const code = url.searchParams.get("code");
   const state = url.searchParams.get("state");
-  if (!code || !state) return errors.badRequest("Missing code or state");
+  if (!code || !state) return fail("google_failed");
 
   const stateRow = await prisma.oAuthState.findUnique({ where: { state } });
-  if (!stateRow || stateRow.expiresAt < new Date()) {
-    return errors.badRequest("Invalid or expired OAuth state");
-  }
+  if (!stateRow || stateRow.expiresAt < new Date()) return fail("google_expired");
   await prisma.oAuthState.delete({ where: { state } });
-
-  const redirectUri = process.env.GOOGLE_REDIRECT_URI ?? url.origin + "/api/v1/auth/google/callback";
 
   const tokenRes = await fetch("https://oauth2.googleapis.com/token", {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
       code,
-      client_id: clientId,
-      client_secret: clientSecret,
-      redirect_uri: redirectUri,
+      client_id: process.env.GOOGLE_CLIENT_ID!,
+      client_secret: process.env.GOOGLE_CLIENT_SECRET!,
+      redirect_uri: `${env.appUrl}/api/v1/auth/google/callback`,
       grant_type: "authorization_code",
     }),
+    signal: AbortSignal.timeout(10_000),
   });
-  if (!tokenRes.ok) return errors.badRequest("Google token exchange failed");
-  const tokens = (await tokenRes.json()) as GoogleTokenResponse;
-
-  const profileRes = await fetch("https://www.googleapis.com/oauth2/v3/userinfo", {
-    headers: { Authorization: "Bearer " + tokens.access_token },
+  if (!tokenRes.ok) {
+    log.warn(`token exchange failed: HTTP ${tokenRes.status}`);
+    return fail("google_failed");
+  }
+  const { access_token } = (await tokenRes.json()) as { access_token: string };
+  const profileRes = await fetch("https://openidconnect.googleapis.com/v1/userinfo", {
+    headers: { Authorization: `Bearer ${access_token}` },
+    signal: AbortSignal.timeout(10_000),
   });
-  if (!profileRes.ok) return errors.badRequest("Failed to fetch Google profile");
-  const profile = (await profileRes.json()) as GoogleUserInfo;
+  if (!profileRes.ok) return fail("google_failed");
+  const profile = (await profileRes.json()) as { sub: string; email?: string; email_verified?: boolean; name?: string; picture?: string };
+  // Only trust verified Google emails — otherwise an attacker could claim an existing account's email.
+  if (!profile.email || profile.email_verified !== true) return fail("google_unverified");
 
   const email = profile.email.toLowerCase();
-  let user = await prisma.user.findUnique({ where: { email } });
+  let user = await prisma.user.findFirst({ where: { OR: [{ googleId: profile.sub }, { email }] } });
   if (!user) {
-    user = await prisma.user.create({
-      data: {
-        email,
-        name: profile.name ?? email.split("@")[0],
-        googleId: profile.sub,
-        avatarUrl: profile.picture,
-      },
-    });
+    user = await prisma.user.create({ data: { email, name: profile.name ?? email.split("@")[0], googleId: profile.sub, avatarUrl: profile.picture ?? null } });
   } else if (!user.googleId) {
-    user = await prisma.user.update({ where: { id: user.id }, data: { googleId: profile.sub } });
+    user = await prisma.user.update({ where: { id: user.id }, data: { googleId: profile.sub, avatarUrl: user.avatarUrl ?? profile.picture ?? null } });
   }
+  await prisma.user.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } });
 
-  // New Google users without an org get a personal org so onboarding works.
-  const membershipCount = await prisma.membership.count({ where: { userId: user.id } });
-  if (membershipCount === 0) {
-    const org = await prisma.organization.create({
-      data: {
-        name: profile.name ? profile.name + "'s Org" : "My Org",
-        slug: "org-" + profile.sub.slice(-8),
-      },
-    });
-    await prisma.membership.create({
-      data: {
-        userId: user.id,
-        organizationId: org.id,
-        role: "ADMIN",
-      },
-    });
-  }
-
-  const token = await createSessionToken({ userId: user.id, email: user.email });
-  const res = Response.redirect((process.env.APP_URL ?? url.origin) + "/dashboard", 302);
-  const headers = new Headers(res.headers);
-  headers.append(
-    "Set-Cookie",
-    `${SESSION_COOKIE}=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${60 * 60 * 24 * 7}` +
-      (process.env.NODE_ENV === "production" ? "; Secure" : ""),
-  );
-  return new Response(null, { status: 302, headers });
+  const hasWorkspace = await prisma.workspaceMember.count({ where: { userId: user.id, workspace: { isDemo: false } } });
+  const { token } = await createSession(user.id, { remember: true, userAgent: req.headers.get("user-agent"), ip: clientIp(req) });
+  const res = NextResponse.redirect(`${env.appUrl}${hasWorkspace ? "/dashboard" : "/onboarding"}`, 302);
+  setSessionCookie(res, token, true);
+  return res;
 });
 
 export const dynamic = "force-dynamic";

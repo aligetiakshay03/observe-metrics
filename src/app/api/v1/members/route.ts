@@ -1,106 +1,67 @@
 import { z } from "zod";
-import { prisma } from "@/lib/db";
-import { ok, errors, handler } from "@/lib/api";
-import { requireOrgContext, requireAdmin } from "@/lib/auth";
-import { rateLimit, clientIp } from "@/lib/rate-limit";
-import { sendEmail, inviteEmailHtml } from "@/lib/email";
-import { planOf } from "@/lib/plans";
-import crypto from "crypto";
+import { prisma } from "@/server/db";
+import { clientIp, E, ok, parseBody, route } from "@/server/http";
+import { assertNotDemo, assertNotGuest, requireWorkspace, roleAtLeast } from "@/server/auth/context";
+import { enforceRateLimit } from "@/server/rate-limit";
+import { randomToken, sha256 } from "@/server/secrets";
+import { inviteEmail, sendEmail } from "@/server/email";
+import { env } from "@/server/env";
+import { audit } from "@/server/audit";
 
-export const GET = handler(async (req) => {
-  const ctx = await requireOrgContext(req);
-  if (!ctx) return errors.unauthorized();
-
-  const members = await prisma.membership.findMany({
-    where: { organizationId: ctx.org.id },
-    include: { user: { select: { id: true, name: true, email: true, avatarUrl: true } } },
-    orderBy: { createdAt: "asc" },
-  });
-  const invites = await prisma.invite.findMany({
-    where: { organizationId: ctx.org.id, status: "PENDING" },
-    orderBy: { createdAt: "desc" },
-  });
-
+export const GET = route(async (req) => {
+  const ctx = await requireWorkspace(req);
+  const [members, invites] = await Promise.all([
+    prisma.workspaceMember.findMany({
+      where: { workspaceId: ctx.workspace.id },
+      include: { user: { select: { id: true, name: true, email: true, isGuest: true, lastLoginAt: true } }, team: { select: { id: true, name: true } } },
+      orderBy: { createdAt: "asc" },
+    }),
+    roleAtLeast(ctx.role, "ADMIN")
+      ? prisma.invite.findMany({ where: { workspaceId: ctx.workspace.id, status: "PENDING", expiresAt: { gt: new Date() } }, orderBy: { createdAt: "desc" } })
+      : Promise.resolve([]),
+  ]);
   return ok({
     members: members.map((m) => ({
       id: m.id,
       role: m.role,
+      jobFunction: m.jobFunction,
       team: m.team,
-      createdAt: m.createdAt,
-      user: m.user,
+      joinedAt: m.createdAt,
+      isYou: m.userId === ctx.user.id,
+      user: { name: m.user.isGuest ? "Guest" : m.user.name, email: m.user.isGuest ? "—" : m.user.email, lastLoginAt: m.user.lastLoginAt },
     })),
-    invites: invites.map((i) => ({
-      id: i.id,
-      email: i.email,
-      role: i.role,
-      team: i.team,
-      status: i.status,
-      expiresAt: i.expiresAt,
-    })),
+    invites: invites.map((i) => ({ id: i.id, email: i.email, role: i.role, expiresAt: i.expiresAt, createdAt: i.createdAt })),
+    role: ctx.role,
   });
 });
 
-const InviteSchema = z.object({
-  email: z.string().email().max(200),
-  role: z.enum(["ADMIN", "MEMBER"]).default("MEMBER"),
-  team: z.string().max(60).nullable().optional(),
+const schema = z.object({
+  email: z.string().trim().toLowerCase().email("Enter a valid email.").max(200),
+  role: z.enum(["ADMIN", "MEMBER", "VIEWER"]).default("MEMBER"),
 });
 
-export const POST = handler(async (req) => {
-  const ctx = await requireOrgContext(req);
-  if (!ctx) return errors.unauthorized();
-  if (!requireAdmin(ctx)) return errors.forbidden();
-  if (!(await rateLimit("invite:" + clientIp(req), 20, 60))) return errors.tooMany();
-
-  const parsed = InviteSchema.safeParse(await req.json().catch(() => null));
-  if (!parsed.success) return errors.badRequest("Invalid invite payload", parsed.error.flatten().fieldErrors);
-
-  const email = parsed.data.email.toLowerCase();
-  const limits = planOf(ctx.org.plan);
-
-  const memberCount = await prisma.membership.count({ where: { organizationId: ctx.org.id } });
-  if (limits.maxMembers !== -1 && memberCount >= limits.maxMembers) {
-    return errors.forbidden();
-  }
-
+/** Invite by email. Invite tokens are stored hashed; the link is emailed (or shown once). */
+export const POST = route(async (req) => {
+  const ctx = await requireWorkspace(req, "ADMIN");
+  assertNotGuest(ctx, "invite teammates");
+  assertNotDemo(ctx, "invite teammates");
+  await enforceRateLimit(`invite:${ctx.user.id}`, 30, 3600);
+  const { email, role } = await parseBody(req, schema);
   const existingUser = await prisma.user.findUnique({ where: { email } });
-  if (existingUser) {
-    const alreadyMember = await prisma.membership.findUnique({
-      where: { userId_organizationId: { userId: existingUser.id, organizationId: ctx.org.id } },
-    });
-    if (alreadyMember) return errors.conflict("This user is already a member of the organization");
+  if (existingUser && (await prisma.workspaceMember.findUnique({ where: { userId_workspaceId: { userId: existingUser.id, workspaceId: ctx.workspace.id } } }))) {
+    throw E.conflict("This person is already a member.", { email: "Already a member of this workspace." });
   }
-
+  const token = randomToken(24);
   const invite = await prisma.invite.upsert({
-    where: { organizationId_email: { organizationId: ctx.org.id, email } },
-    create: {
-      organizationId: ctx.org.id,
-      email,
-      role: parsed.data.role,
-      team: parsed.data.team ?? null,
-      token: crypto.randomBytes(24).toString("hex"),
-      invitedById: ctx.user.id,
-      expiresAt: new Date(Date.now() + 7 * 86_400_000),
-    },
-    update: {
-      role: parsed.data.role,
-      team: parsed.data.team ?? null,
-      token: crypto.randomBytes(24).toString("hex"),
-      status: "PENDING",
-      invitedById: ctx.user.id,
-      expiresAt: new Date(Date.now() + 7 * 86_400_000),
-    },
+    where: { workspaceId_email: { workspaceId: ctx.workspace.id, email } },
+    create: { workspaceId: ctx.workspace.id, email, role, token: sha256(token), invitedById: ctx.user.id, expiresAt: new Date(Date.now() + 7 * 86_400_000) },
+    update: { role, token: sha256(token), status: "PENDING", invitedById: ctx.user.id, expiresAt: new Date(Date.now() + 7 * 86_400_000) },
   });
-
-  const inviteUrl = (process.env.APP_URL ?? new URL(req.url).origin) + "/invite/" + invite.token;
-  await sendEmail({
-    to: email,
-    subject: "You've been invited to " + ctx.org.name + " on ObserveMetrics",
-    html: inviteEmailHtml(ctx.org.name, inviteUrl, parsed.data.role),
-    text: "Join " + ctx.org.name + " on ObserveMetrics: " + inviteUrl,
-  });
-
-  return ok({ invite: { id: invite.id, email: invite.email, role: invite.role, team: invite.team }, inviteUrl }, { status: 201 });
+  const link = `${env.appUrl}/invite/${token}`;
+  const delivered = await sendEmail(inviteEmail(email, ctx.workspace.name, ctx.user.name ?? ctx.user.email, link, role));
+  await audit({ workspaceId: ctx.workspace.id, actorId: ctx.user.id, action: "member.invited", targetType: "invite", targetId: invite.id, metadata: { email, role }, ip: clientIp(req) });
+  // Without SMTP the inviter gets the link to share manually (it's shown only in this response).
+  return ok({ invite: { id: invite.id, email, role }, emailed: delivered, link: delivered ? null : link }, { status: 201, headers: { "Cache-Control": "no-store" } });
 });
 
 export const dynamic = "force-dynamic";

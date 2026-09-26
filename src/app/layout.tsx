@@ -1,29 +1,53 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
+import { GeistSans } from "geist/font/sans";
+import { GeistMono } from "geist/font/mono";
 import "./globals.css";
-import { Providers } from "./providers";
+import { ThemeProvider, THEME_BOOT_SCRIPT } from "@/components/providers/ThemeProvider";
+import { Toaster } from "@/components/providers/Toaster";
+
+const siteUrl = process.env.APP_URL ?? "http://localhost:3100";
 
 export const metadata: Metadata = {
-  title: "ObserveMetrics — AI spend & usage analytics",
+  metadataBase: new URL(siteUrl),
+  title: { default: "ObserveMetrics — AI Usage & Cost Intelligence", template: "%s · ObserveMetrics" },
   description:
-    "Centralized analytics for AI spending: track tokens, costs, and budgets across OpenAI, Anthropic, Google Gemini and more.",
-  icons: {
-    icon: "data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><defs><linearGradient id=%22g%22 x1=%220%22 y1=%220%22 x2=%221%22 y2=%221%22><stop offset=%220%22 stop-color=%22%236366f1%22/><stop offset=%221%22 stop-color=%22%23a855f7%22/></linearGradient></defs><rect width=%22100%22 height=%22100%22 rx=%2224%22 fill=%22url(%23g)%22/></svg>",
+    "Track models, tokens, spend, latency and usage across OpenAI, Anthropic, Google Gemini and Mistral — then uncover the patterns driving AI cost and performance.",
+  applicationName: "ObserveMetrics",
+  alternates: { canonical: "/" },
+  openGraph: {
+    type: "website",
+    siteName: "ObserveMetrics",
+    title: "ObserveMetrics — AI Usage & Cost Intelligence",
+    description: "Know exactly what your AI is costing you. Then find where to optimize it.",
+    url: "/",
+    images: [{ url: "/opengraph-image", width: 1200, height: 630, alt: "ObserveMetrics" }],
   },
+  twitter: { card: "summary_large_image", title: "ObserveMetrics — AI Usage & Cost Intelligence", description: "Know exactly what your AI is costing you." },
+  robots: { index: true, follow: true },
+};
+
+export const viewport: Viewport = {
+  themeColor: [
+    { media: "(prefers-color-scheme: light)", color: "#f8f9fb" },
+    { media: "(prefers-color-scheme: dark)", color: "#0b0c10" },
+  ],
+  width: "device-width",
+  initialScale: 1,
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" suppressHydrationWarning>
+    <html lang="en" suppressHydrationWarning className={`${GeistSans.variable} ${GeistMono.variable}`}>
       <head>
-        <script
-          dangerouslySetInnerHTML={{
-            __html:
-              "try{var t=localStorage.getItem('om-theme');if(t==='dark'||(!t&&window.matchMedia('(prefers-color-scheme: dark)').matches)){document.documentElement.classList.add('dark')}}catch(e){}",
-          }}
-        />
+        <script dangerouslySetInnerHTML={{ __html: THEME_BOOT_SCRIPT }} />
       </head>
-      <body>
-        <Providers>{children}</Providers>
+      <body className="min-h-screen font-sans">
+        <a href="#main" className="sr-only focus:not-sr-only focus:fixed focus:left-3 focus:top-3 focus:z-[200] focus:rounded-md focus:bg-surface focus:px-3 focus:py-2 focus:shadow-pop">
+          Skip to content
+        </a>
+        <ThemeProvider>
+          <Toaster>{children}</Toaster>
+        </ThemeProvider>
       </body>
     </html>
   );

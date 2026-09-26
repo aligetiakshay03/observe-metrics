@@ -1,141 +1,150 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { useSession } from "../../providers";
-import {
-  MetricCard, ChartCard, SectionHeader, DataTable, ProviderBadge, ModelBadge,
-  EmptyState, PageSkeleton, RangePicker, FilterDropdown, PROVIDER_FILTER_OPTIONS,
-  fmtCompact,
-  type Column,
-} from "@/components/ui";
-import { TokenStackedArea, RankedBars } from "@/components/charts";
-
-interface OrgData {
-  stats: { inputTokens: number; outputTokens: number; tokens: number; tokensPerRequest: number; requests: number };
-  models: { model: string; provider: string; inputTokens: number; outputTokens: number; tokens: number; requests: number }[];
-  teams: { team: string; tokens: number }[];
-  users: { name: string; team: string; requests: number; tokens: number; spendUsd: number }[];
-  daily: { day: string; inputTokens: number; outputTokens: number }[];
-}
-
-interface UserRow { name: string; team: string; requests: number; tokens: number; spendUsd: number }
-
-const userCols: Column<UserRow>[] = [
-  { key: "name", header: "User", render: (u) => <span className="font-medium">{u.name}</span> },
-  { key: "team", header: "Team", render: (u) => <span className="badge badge-neutral">{u.team}</span> },
-  { key: "requests", header: "Requests", numeric: true, render: (u) => fmtCompact(u.requests) },
-  { key: "tokens", header: "Tokens", numeric: true, render: (u) => <span className="font-semibold">{fmtCompact(u.tokens)}</span> },
-  { key: "spend", header: "Attributed spend", numeric: true, render: (u) => "$" + u.spendUsd.toFixed(0) },
-];
+import Link from "next/link";
+import { ArrowRight } from "lucide-react";
+import { useApi } from "@/lib/api-client";
+import { useFilters, withRange } from "@/lib/use-filters";
+import { fmtCompact, fmtNumber, fmtUsd, prettyModel, providerColor, providerLabel } from "@/lib/format";
+import type { UsageView, UserRow } from "@/lib/types";
+import { BasisBadge, Card, ErrorState, PageHeader } from "@/components/ui/primitives";
+import { DataTable, type Column } from "@/components/ui/DataTable";
+import { BarList, Donut, TokensChart } from "@/components/charts";
+import { FilterBar, KpiCard, PageSkeleton } from "@/components/dashboard/blocks";
+import { EmptyUsage } from "@/components/dashboard/EmptyUsage";
 
 export default function UsagePage() {
-  const { me, loading: sessionLoading } = useSession();
-  const [days, setDays] = useState(30);
-  const [provider, setProvider] = useState("");
-  const [data, setData] = useState<OrgData | null>(null);
-  const [loading, setLoading] = useState(true);
+  const { query, values } = useFilters();
+  const { data, error, loading, refresh } = useApi<UsageView>(`/api/v1/analytics/usage?${query}`);
+  const r = (href: string) => withRange(href, values);
 
-  useEffect(() => {
-    if (sessionLoading || !me) return;
-    setLoading(true);
-    const params = new URLSearchParams({ from: isoDaysAgo(days), to: isoToday() });
-    if (provider) params.set("provider", provider);
-    fetch("/api/v1/analytics/org?" + params.toString(), { cache: "no-store" })
-      .then(async (res) => (res.ok ? (await res.json()).data : null))
-      .then((d) => setData(d?.empty ? null : d))
-      .finally(() => setLoading(false));
-  }, [me, sessionLoading, days, provider]);
+  const header = (
+    <PageHeader
+      title="Usage"
+      description="Tokens and requests across providers, models, teams and applications."
+      eyebrow={data ? <BasisBadge basis={data.basis} /> : undefined}
+      actions={<FilterBar lookups={data?.lookups} exportDataset={["usage", "events"]} />}
+    />
+  );
 
-  if (sessionLoading || loading) return <PageSkeleton />;
-
-  if (!data || data.stats.tokens <= 0) {
+  if (loading && !data) return <PageSkeleton kpis={5} />;
+  if (error && !data)
     return (
-      <div>
-        <SectionHeader title="Usage" subtitle="Token consumption across models, teams and users." />
-        <EmptyState
-          title="No token data yet"
-          body="Token analytics appear as soon as a provider connection syncs usage."
-          ctaHref="/dashboard/settings"
-          ctaLabel="Connect provider"
-        />
-      </div>
+      <>
+        {header}
+        <div className="card">
+          <ErrorState message={error.message} onRetry={refresh} />
+        </div>
+      </>
     );
-  }
+  if (!data) return null;
+  if (data.empty && !values.provider && !values.team && !values.app)
+    return (
+      <>
+        {header}
+        <EmptyUsage />
+      </>
+    );
 
-  const s = data.stats;
-  const teamBars = data.teams.map((t) => ({ name: t.team, value: t.tokens }));
-  const modelBars = data.models.map((m) => ({ name: m.model, value: m.tokens }));
+  const k = data.kpis;
+  const userCols: Column<UserRow>[] = [
+    { key: "user", header: "User", cell: (u) => <span className="font-medium">{u.user}</span>, sort: (u) => u.user },
+    { key: "team", header: "Team", cell: (u) => u.teamName ?? <span className="text-faint">—</span>, sort: (u) => u.teamName ?? "", hideBelow: "md" },
+    { key: "requests", header: "Requests", numeric: true, cell: (u) => fmtNumber(u.requests), sort: (u) => u.requests },
+    { key: "tokens", header: "Tokens", numeric: true, cell: (u) => fmtCompact(u.tokens), sort: (u) => u.tokens },
+    { key: "spend", header: "Spend", numeric: true, cell: (u) => <span className="font-medium">{fmtUsd(u.costUsd)}</span>, sort: (u) => u.costUsd },
+  ];
 
   return (
     <div>
-      <SectionHeader
-        title="Usage"
-        subtitle="Token consumption across models, teams and users."
-        actions={
-          <>
-            <FilterDropdown value={provider} onChange={setProvider} options={PROVIDER_FILTER_OPTIONS} allLabel="All providers" />
-            <RangePicker value={days} onChange={setDays} />
-          </>
-        }
-      />
+      {header}
 
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        <MetricCard label="Input tokens" value={fmtCompact(s.inputTokens)} />
-        <MetricCard label="Output tokens" value={fmtCompact(s.outputTokens)} />
-        <MetricCard label="Total tokens" value={fmtCompact(s.tokens)} />
-        <MetricCard label="Tokens / request" value={fmtCompact(s.tokensPerRequest)} />
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
+        <KpiCard label="Total tokens" value={fmtCompact(k.tokens.value)} kpi={k.tokens} tip="Input + output tokens in the selected range." />
+        <KpiCard label="Input tokens" value={fmtCompact(k.inputTokens.value)} kpi={k.inputTokens} tip="Prompt tokens sent to models, including cached input." sparkColor="var(--c1)" />
+        <KpiCard label="Output tokens" value={fmtCompact(k.outputTokens.value)} kpi={k.outputTokens} tip="Tokens generated by models." sparkColor="var(--c2)" />
+        <KpiCard
+          label="Tokens / request"
+          value={fmtCompact(k.tokensPerRequest.value)}
+          kpi={k.tokensPerRequest}
+          inverse
+          tip="Average tokens per request. Rising values often mean growing context windows."
+          sparkColor="var(--c4)"
+        />
+        <KpiCard label="Requests" value={fmtNumber(k.requests.value)} kpi={k.requests} tip="Model requests recorded by instrumented apps and providers that report request counts." sparkColor="var(--c3)" />
       </div>
 
-      <div className="mt-4 grid gap-4 lg:grid-cols-3">
-        <ChartCard title="Tokens over time" subtitle="Input vs output, stacked" className="lg:col-span-2">
-          <TokenStackedArea data={data.daily} />
-        </ChartCard>
-        <div className="grid gap-4">
-          <ChartCard title="Tokens by model">
-            <RankedBars data={modelBars} currency={false} color="#8b5cf6" maxRows={5} />
-          </ChartCard>
-        </div>
+      <div className="mt-4 grid grid-cols-1 gap-4 xl:grid-cols-3">
+        <Card className="xl:col-span-2" title="Tokens over time" subtitle="Input vs output tokens per day">
+          <TokensChart data={data.series} height={268} />
+        </Card>
+        <Card title="Tokens by provider" subtitle="Share of tokens in range">
+          <Donut
+            unit="tokens"
+            centerLabel="Tokens"
+            items={data.byProvider.map((p, i) => ({
+              id: p.id,
+              label: providerLabel(p.id),
+              value: p.tokens,
+              color: providerColor(p.id, i),
+              href: withRange(`/dashboard/usage?provider=${p.id}`, values),
+            }))}
+          />
+        </Card>
       </div>
 
-      <div className="mt-4 grid gap-4 lg:grid-cols-2">
-        <ChartCard title="Tokens by team">
-          <RankedBars data={teamBars} currency={false} maxRows={6} />
-        </ChartCard>
-        <ChartCard title="Top token-consuming users" bodyClassName="p-0">
-          <div className="px-2 pb-2">
-            <DataTable columns={userCols} rows={data.users} rowKey={(u) => u.name} emptyMessage="No user attribution yet" />
-          </div>
-        </ChartCard>
+      <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-2">
+        <Card
+          title="Tokens by model"
+          actions={
+            <Link href={r("/dashboard/models")} className="inline-flex items-center gap-1 text-xs font-medium text-accent">
+              Compare models <ArrowRight size={12} />
+            </Link>
+          }
+        >
+          <BarList
+            unit="tokens"
+            max={8}
+            items={[...data.models]
+              .sort((a, b) => b.tokens - a.tokens)
+              .map((m) => ({
+                id: `${m.provider}:${m.model}`,
+                label: prettyModel(m.model),
+                value: m.tokens,
+                color: providerColor(m.provider),
+                href: r(`/dashboard/models/${encodeURIComponent(m.provider)}/${encodeURIComponent(m.model)}`),
+              }))}
+          />
+        </Card>
+        <Card title="Tokens by team" actions={<Link href={r("/dashboard/teams")} className="text-xs font-medium text-accent">View teams</Link>}>
+          <BarList
+            unit="tokens"
+            color="var(--c2)"
+            items={[...data.teams].sort((a, b) => b.tokens - a.tokens).map((t) => ({ id: t.id, label: t.name, value: t.tokens, href: t.id ? r(`/dashboard/teams/${t.id}`) : undefined }))}
+          />
+        </Card>
       </div>
 
-      {/* Model detail strip */}
-      <div className="mt-4">
-        <ChartCard title="By model" subtitle="Input / output split" bodyClassName="p-0">
-          <div className="px-2 pb-2">
-            <DataTable
-              columns={[
-                { key: "model", header: "Model", render: (m: (typeof data.models)[number]) => <ModelBadge model={m.model} /> },
-                { key: "provider", header: "Provider", render: (m: (typeof data.models)[number]) => <ProviderBadge provider={m.provider} /> },
-                { key: "in", header: "Input", numeric: true, render: (m: (typeof data.models)[number]) => fmtCompact(m.inputTokens) },
-                { key: "out", header: "Output", numeric: true, render: (m: (typeof data.models)[number]) => fmtCompact(m.outputTokens) },
-                { key: "total", header: "Total", numeric: true, render: (m: (typeof data.models)[number]) => <span className="font-semibold">{fmtCompact(m.tokens)}</span> },
-              ]}
-              rows={data.models}
-              rowKey={(m) => m.model}
-              emptyMessage="No model usage in this period"
-            />
-          </div>
-        </ChartCard>
+      <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-5">
+        <Card className="lg:col-span-3" title="Top consumers" subtitle="Users with the most spend in range" bodyClassName="pb-0">
+          <DataTable
+            caption="Top consumers"
+            rows={data.users}
+            columns={userCols}
+            rowKey={(u) => u.user}
+            href={(u) => r(`/dashboard/requests?user=${encodeURIComponent(u.user)}`)}
+            initialSort={{ key: "spend", dir: "desc" }}
+            pageSize={10}
+            empty={<p className="py-8 text-center text-sm text-muted">No user attribution yet. Send a <code className="font-mono text-xs">user</code> field with ingested events.</p>}
+          />
+        </Card>
+        <Card className="lg:col-span-2" title="Tokens by application" actions={<Link href={r("/dashboard/applications")} className="text-xs font-medium text-accent">View applications</Link>}>
+          <BarList
+            unit="tokens"
+            color="var(--c3)"
+            items={[...data.apps].sort((a, b) => b.tokens - a.tokens).map((a) => ({ id: a.id, label: a.name, value: a.tokens, href: a.id ? r(`/dashboard/applications/${a.id}`) : undefined }))}
+          />
+        </Card>
       </div>
     </div>
   );
-}
-
-function isoDaysAgo(n: number): string {
-  const d = new Date();
-  d.setUTCDate(d.getUTCDate() - (n - 1));
-  return d.toISOString().slice(0, 10);
-}
-function isoToday(): string {
-  return new Date().toISOString().slice(0, 10);
 }

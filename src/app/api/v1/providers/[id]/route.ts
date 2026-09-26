@@ -1,66 +1,72 @@
 import { z } from "zod";
-import { prisma } from "@/lib/db";
-import { ok, errors, handler } from "@/lib/api";
-import { requireOrgContext, requireAdmin } from "@/lib/auth";
-import { encryptSecret, keyLast4 } from "@/lib/crypto";
-import { getAdapter } from "@/lib/providers/types";
+import { prisma } from "@/server/db";
+import { ApiError, clientIp, E, ok, parseBody, route } from "@/server/http";
+import { requireWorkspace } from "@/server/auth/context";
+import { adapterForEnum } from "@/server/providers/registry";
+import { serializeConnection } from "@/server/providers/serialize";
+import { sealSecret } from "@/server/secrets";
+import { audit } from "@/server/audit";
+import { enqueueSync } from "@/server/sync/engine";
 
-const PatchSchema = z.object({
-  name: z.string().min(1).max(60).optional(),
-  apiKey: z.string().min(1).max(8000).optional(),
-  status: z.enum(["ACTIVE", "DISABLED"]).optional(),
+type P = { params: { id: string } };
+
+async function load(workspaceId: string, id: string) {
+  const c = await prisma.providerConnection.findFirst({ where: { id, workspaceId } });
+  if (!c) throw E.notFound("Connection");
+  return c;
+}
+
+const schema = z.object({
+  name: z.string().trim().min(1).max(60).optional(),
+  apiKey: z.string().trim().min(8, "Paste the full API key.").max(10_000).optional(),
+  enabled: z.boolean().optional(),
 });
 
-type Params = { params: Promise<{ id: string }> };
-
-export const PATCH = handler(async (req: Request, { params }: Params) => {
-  const ctx = await requireOrgContext(req);
-  if (!ctx) return errors.unauthorized();
-  const { id } = await params;
-
-  const conn = await prisma.providerConnection.findFirst({
-    where: { id, organizationId: ctx.org.id },
-  });
-  if (!conn) return errors.notFound("Connection");
-
-  const parsed = PatchSchema.safeParse(await req.json().catch(() => null));
-  if (!parsed.success) return errors.badRequest("Invalid payload");
-
+/** Rename, rotate the key (re-validated), or pause/resume syncing. */
+export const PATCH = route(async (req, { params }: P) => {
+  const ctx = await requireWorkspace(req, "ADMIN");
+  const c = await load(ctx.workspace.id, params.id);
+  const body = await parseBody(req, schema);
   const data: Record<string, unknown> = {};
-  if (parsed.data.name) data.name = parsed.data.name.trim();
-  if (parsed.data.status) data.status = parsed.data.status;
-  if (parsed.data.apiKey) {
-    const adapter = getAdapter(conn.provider);
-    if (adapter?.verify) {
-      const check = await adapter.verify(parsed.data.apiKey);
-      if (!check.ok) return errors.badRequest("Provider rejected the API key: " + check.error);
-    }
-    data.apiKeyCiphertext = encryptSecret(parsed.data.apiKey);
-    data.keyLast4 = keyLast4(parsed.data.apiKey);
-    data.status = "ACTIVE";
-    data.lastSyncError = null;
+  if (body.name) data.name = body.name;
+  if (body.enabled !== undefined) data.status = body.enabled ? "ACTIVE" : "DISABLED";
+  if (body.apiKey) {
+    const adapter = adapterForEnum(c.provider);
+    if (!adapter) throw E.invalid("Unsupported provider.");
+    const result = await adapter.validateCredentials(body.apiKey);
+    if (!result.ok) throw new ApiError(result.code === "invalid_credentials" ? "provider_auth_failed" : "provider_permission", result.message);
+    const sealed = sealSecret(body.apiKey, ctx.workspace.id);
+    Object.assign(data, { apiKeyCiphertext: sealed.ciphertext, keyLast4: sealed.last4, status: "ACTIVE", lastSyncError: null, lastTestedAt: new Date() });
   }
-
-  const updated = await prisma.providerConnection.update({
-    where: { id: conn.id },
-    data,
-    select: { id: true, provider: true, name: true, keyLast4: true, status: true, lastSyncedAt: true },
+  const updated = await prisma.providerConnection.update({ where: { id: c.id }, data });
+  await audit({
+    workspaceId: ctx.workspace.id,
+    actorId: ctx.user.id,
+    action: "provider.updated",
+    targetType: "provider_connection",
+    targetId: c.id,
+    metadata: { keyRotated: !!body.apiKey, enabled: body.enabled ?? null, name: body.name ?? null },
+    ip: clientIp(req),
   });
-  return ok({ connection: updated });
+  if (body.apiKey) await enqueueSync(updated, "manual");
+  return ok({ connection: serializeConnection(updated) });
 });
 
-export const DELETE = handler(async (req: Request, { params }: Params) => {
-  const ctx = await requireOrgContext(req);
-  if (!ctx) return errors.unauthorized();
-  if (!requireAdmin(ctx)) return errors.forbidden();
-  const { id } = await params;
-
-  const conn = await prisma.providerConnection.findFirst({
-    where: { id, organizationId: ctx.org.id },
+/** Disconnect: deletes the stored credential. Synced history is kept. */
+export const DELETE = route(async (req, { params }: P) => {
+  const ctx = await requireWorkspace(req, "ADMIN");
+  const c = await load(ctx.workspace.id, params.id);
+  await prisma.providerConnection.delete({ where: { id: c.id } });
+  await prisma.alert.updateMany({ where: { workspaceId: ctx.workspace.id, connectionId: c.id, resolvedAt: null }, data: { resolvedAt: new Date() } });
+  await audit({
+    workspaceId: ctx.workspace.id,
+    actorId: ctx.user.id,
+    action: "provider.disconnected",
+    targetType: "provider_connection",
+    targetId: c.id,
+    metadata: { provider: c.provider.toLowerCase(), name: c.name },
+    ip: clientIp(req),
   });
-  if (!conn) return errors.notFound("Connection");
-
-  await prisma.providerConnection.delete({ where: { id: conn.id } });
   return ok({ deleted: true });
 });
 

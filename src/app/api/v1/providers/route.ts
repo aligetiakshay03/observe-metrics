@@ -1,75 +1,78 @@
 import { z } from "zod";
-import { prisma } from "@/lib/db";
-import { ok, errors, handler } from "@/lib/api";
-import { requireOrgContext, requireAdmin } from "@/lib/auth";
-import { encryptSecret, keyLast4 } from "@/lib/crypto";
-import { planOf } from "@/lib/plans";
-import { rateLimit } from "@/lib/rate-limit";
-import { getAdapter } from "@/lib/providers/types";
+import { prisma } from "@/server/db";
+import { ApiError, clientIp, E, ok, parseBody, route } from "@/server/http";
+import { assertNotDemo, assertNotGuest, requireWorkspace } from "@/server/auth/context";
+import { enforceRateLimit } from "@/server/rate-limit";
+import { getAdapter, PROVIDER_IDS, providerCatalog } from "@/server/providers/registry";
+import { PROVIDER_ENUM, type ProviderId } from "@/server/providers/types";
+import { serializeConnection } from "@/server/providers/serialize";
+import { sealSecret } from "@/server/secrets";
+import { audit } from "@/server/audit";
+import { enqueueSync } from "@/server/sync/engine";
 
-export const GET = handler(async (req) => {
-  const ctx = await requireOrgContext(req);
-  if (!ctx) return errors.unauthorized();
-
+export const GET = route(async (req) => {
+  const ctx = await requireWorkspace(req);
   const connections = await prisma.providerConnection.findMany({
-    where: { organizationId: ctx.org.id },
+    where: { workspaceId: ctx.workspace.id, provider: { not: "DEMO" } },
     orderBy: { createdAt: "asc" },
-    select: {
-      id: true,
-      provider: true,
-      name: true,
-      keyLast4: true,
-      status: true,
-      lastSyncedAt: true,
-      lastSyncError: true,
-      createdAt: true,
-    },
   });
-  return ok({ connections });
+  return ok({
+    catalog: providerCatalog(),
+    connections: connections.map(serializeConnection),
+    canManage: ctx.role === "OWNER" || ctx.role === "ADMIN",
+    isDemo: ctx.workspace.isDemo,
+  });
 });
 
-const ConnectSchema = z.object({
-  provider: z.enum(["OPENAI", "ANTHROPIC", "GOOGLE", "MISTRAL", "DEMO"]),
-  name: z.string().max(60).optional(),
-  apiKey: z.string().min(1).max(8000),
+const schema = z.object({
+  provider: z.enum(PROVIDER_IDS as [ProviderId, ...ProviderId[]]),
+  name: z.string().trim().max(60).optional(),
+  apiKey: z.string().trim().min(8, "Paste the full API key.").max(10_000),
 });
 
-export const POST = handler(async (req) => {
-  const ctx = await requireOrgContext(req);
-  if (!ctx) return errors.unauthorized();
-  if (!(await rateLimit("connect:" + ctx.user.id, 20, 60))) return errors.tooMany();
+/** Validate the credential with the provider, then store it sealed. */
+export const POST = route(async (req) => {
+  const ctx = await requireWorkspace(req, "ADMIN");
+  assertNotGuest(ctx, "connect a provider");
+  assertNotDemo(ctx, "connect a provider");
+  await enforceRateLimit(`provider-connect:${ctx.user.id}`, 20, 3600);
+  const body = await parseBody(req, schema);
+  const name = body.name || "Primary";
 
-  const parsed = ConnectSchema.safeParse(await req.json().catch(() => null));
-  if (!parsed.success) return errors.badRequest("Invalid connection payload", parsed.error.flatten().fieldErrors);
+  const existing = await prisma.providerConnection.findUnique({
+    where: { workspaceId_provider_name: { workspaceId: ctx.workspace.id, provider: PROVIDER_ENUM[body.provider], name } },
+  });
+  if (existing) throw E.conflict(`A ${getAdapter(body.provider).label} connection named "${name}" already exists. Update its key instead.`);
 
-  const { provider, apiKey } = parsed.data;
-  const name = parsed.data.name?.trim() || "Primary";
-  const limits = planOf(ctx.org.plan);
-
-  const existing = await prisma.providerConnection.count({ where: { organizationId: ctx.org.id } });
-  if (limits.maxProviders !== -1 && existing >= limits.maxProviders) {
-    return errors.forbidden();
+  const adapter = getAdapter(body.provider);
+  const result = await adapter.validateCredentials(body.apiKey);
+  if (!result.ok) {
+    await audit({ workspaceId: ctx.workspace.id, actorId: ctx.user.id, action: "provider.tested", metadata: { provider: body.provider, ok: false, code: result.code ?? null }, ip: clientIp(req) });
+    throw new ApiError(result.code === "invalid_credentials" ? "provider_auth_failed" : result.code === "insufficient_permissions" ? "provider_permission" : result.code === "rate_limited" ? "provider_rate_limited" : "provider_unavailable", result.message);
   }
 
-  // Verify the key with the provider before storing it.
-  const adapter = getAdapter(provider);
-  if (adapter?.verify) {
-    const check = await adapter.verify(apiKey);
-    if (!check.ok) return errors.badRequest("Provider rejected the API key: " + check.error);
-  }
-
+  const sealed = sealSecret(body.apiKey, ctx.workspace.id);
   const connection = await prisma.providerConnection.create({
     data: {
-      organizationId: ctx.org.id,
-      provider,
+      workspaceId: ctx.workspace.id,
+      provider: PROVIDER_ENUM[body.provider],
       name,
-      apiKeyCiphertext: encryptSecret(apiKey),
-      keyLast4: keyLast4(apiKey),
+      apiKeyCiphertext: sealed.ciphertext,
+      keyLast4: sealed.last4,
+      lastTestedAt: new Date(),
     },
-    select: { id: true, provider: true, name: true, keyLast4: true, status: true },
   });
-
-  return ok({ connection }, { status: 201 });
+  await audit({
+    workspaceId: ctx.workspace.id,
+    actorId: ctx.user.id,
+    action: "provider.connected",
+    targetType: "provider_connection",
+    targetId: connection.id,
+    metadata: { provider: body.provider, name, key: "…" + sealed.last4 },
+    ip: clientIp(req),
+  });
+  const job = await enqueueSync(connection, "connect");
+  return ok({ connection: serializeConnection(connection), message: result.message, jobId: job.id }, { status: 201 });
 });
 
 export const dynamic = "force-dynamic";

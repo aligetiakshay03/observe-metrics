@@ -1,50 +1,42 @@
-import { z } from "zod";
-import { prisma } from "@/lib/db";
-import { ok, errors, handler } from "@/lib/api";
-import { requireOrgContext, requireAdmin } from "@/lib/auth";
+import { prisma } from "@/server/db";
+import { clientIp, E, ok, parseBody, route } from "@/server/http";
+import { requireWorkspace } from "@/server/auth/context";
+import { audit } from "@/server/audit";
+import { refreshWorkspaceIntelligence } from "@/server/insights/run";
+import { assertBudgetTargets, budgetData, budgetSchema } from "@/server/schemas";
 
-type Params = { params: Promise<{ id: string }> };
+type P = { params: { id: string } };
 
-const PatchSchema = z.object({
-  amountCents: z.number().int().min(100).max(100_000_000).optional(),
-});
-
-export const PATCH = handler(async (req: Request, { params }: Params) => {
-  const ctx = await requireOrgContext(req);
-  if (!ctx) return errors.unauthorized();
-  if (!requireAdmin(ctx)) return errors.forbidden();
-  const { id } = await params;
-
-  const budget = await prisma.budget.findFirst({ where: { id, organizationId: ctx.org.id } });
-  if (!budget) return errors.notFound("Budget");
-
-  const parsed = PatchSchema.safeParse(await req.json().catch(() => null));
-  if (!parsed.success || parsed.data.amountCents === undefined) {
-    return errors.badRequest("amountCents is required");
-  }
-
-  const updated = await prisma.budget.update({
-    where: { id: budget.id },
+export const PATCH = route(async (req, { params }: P) => {
+  const ctx = await requireWorkspace(req, "ADMIN");
+  const existing = await prisma.budget.findFirst({ where: { id: params.id, workspaceId: ctx.workspace.id } });
+  if (!existing) throw E.notFound("Budget");
+  const b = await parseBody(req, budgetSchema);
+  await assertBudgetTargets(ctx.workspace.id, b);
+  await prisma.budget.update({
+    where: { id: existing.id },
     data: {
-      amountCents: parsed.data.amountCents,
-      // reset alert stamps so re-alerting works against the new amount
-      alert80SentAt: null,
-      alert100SentAt: null,
+      ...budgetData(b),
+      // Changing the amount re-arms threshold alerts for the month.
+      ...(b.amountUsd !== existing.amountUsd ? { alertedThreshold: null, alertedPeriod: null } : {}),
     },
   });
-  return ok({ budget: updated });
+  await audit({ workspaceId: ctx.workspace.id, actorId: ctx.user.id, action: "budget.updated", targetType: "budget", targetId: existing.id, metadata: { amountUsd: b.amountUsd }, ip: clientIp(req) });
+  await refreshWorkspaceIntelligence(ctx.workspace.id);
+  return ok({ updated: true });
 });
 
-export const DELETE = handler(async (req: Request, { params }: Params) => {
-  const ctx = await requireOrgContext(req);
-  if (!ctx) return errors.unauthorized();
-  if (!requireAdmin(ctx)) return errors.forbidden();
-  const { id } = await params;
-
-  const budget = await prisma.budget.findFirst({ where: { id, organizationId: ctx.org.id } });
-  if (!budget) return errors.notFound("Budget");
-
-  await prisma.budget.delete({ where: { id: budget.id } });
+export const DELETE = route(async (req, { params }: P) => {
+  const ctx = await requireWorkspace(req, "ADMIN");
+  const existing = await prisma.budget.findFirst({ where: { id: params.id, workspaceId: ctx.workspace.id } });
+  if (!existing) throw E.notFound("Budget");
+  await prisma.budget.delete({ where: { id: existing.id } });
+  await prisma.alert.updateMany({ where: { workspaceId: ctx.workspace.id, budgetId: existing.id, resolvedAt: null }, data: { resolvedAt: new Date() } });
+  await prisma.insight.updateMany({
+    where: { workspaceId: ctx.workspace.id, type: "budget_threshold", fingerprint: { startsWith: `budget_threshold:${existing.id}|` }, status: "OPEN" },
+    data: { status: "RESOLVED" },
+  });
+  await audit({ workspaceId: ctx.workspace.id, actorId: ctx.user.id, action: "budget.deleted", targetType: "budget", targetId: existing.id, metadata: { name: existing.name }, ip: clientIp(req) });
   return ok({ deleted: true });
 });
 

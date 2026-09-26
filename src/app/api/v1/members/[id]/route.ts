@@ -1,68 +1,63 @@
 import { z } from "zod";
-import { prisma } from "@/lib/db";
-import { ok, errors, handler } from "@/lib/api";
-import { requireOrgContext, requireAdmin } from "@/lib/auth";
+import { prisma } from "@/server/db";
+import { clientIp, E, ok, parseBody, route } from "@/server/http";
+import { requireWorkspace } from "@/server/auth/context";
+import { audit } from "@/server/audit";
 
-type Params = { params: Promise<{ id: string }> };
+type P = { params: { id: string } };
 
-const PatchSchema = z.object({
-  role: z.enum(["ADMIN", "MEMBER"]).optional(),
-  team: z.string().max(60).nullable().optional(),
+const schema = z.object({
+  role: z.enum(["OWNER", "ADMIN", "MEMBER", "VIEWER"]).optional(),
+  teamId: z.string().max(64).nullable().optional(),
 });
 
-export const PATCH = handler(async (req: Request, { params }: Params) => {
-  const ctx = await requireOrgContext(req);
-  if (!ctx) return errors.unauthorized();
-  if (!requireAdmin(ctx)) return errors.forbidden();
-  const { id } = await params;
+async function ownerCount(workspaceId: string) {
+  return prisma.workspaceMember.count({ where: { workspaceId, role: "OWNER" } });
+}
 
-  const membership = await prisma.membership.findFirst({
-    where: { id, organizationId: ctx.org.id },
-  });
-  if (!membership) return errors.notFound("Member");
+/**
+ * Role changes: admins may manage members/viewers; only owners can grant or
+ * revoke admin/owner. The last owner can't be demoted.
+ */
+export const PATCH = route(async (req, { params }: P) => {
+  const ctx = await requireWorkspace(req, "ADMIN");
+  const target = await prisma.workspaceMember.findFirst({ where: { id: params.id, workspaceId: ctx.workspace.id } });
+  if (!target) throw E.notFound("Member");
+  const body = await parseBody(req, schema);
+  const data: { role?: typeof target.role; teamId?: string | null } = {};
 
-  const parsed = PatchSchema.safeParse(await req.json().catch(() => null));
-  if (!parsed.success) return errors.badRequest("Invalid payload");
-
-  // Prevent removing the last admin via self-demotion.
-  if (parsed.data.role === "MEMBER" && membership.role === "ADMIN") {
-    const adminCount = await prisma.membership.count({
-      where: { organizationId: ctx.org.id, role: "ADMIN" },
-    });
-    if (adminCount <= 1) return errors.conflict("Cannot demote the last admin");
+  if (body.role && body.role !== target.role) {
+    const privileged = (r: string) => r === "OWNER" || r === "ADMIN";
+    if ((privileged(body.role) || privileged(target.role)) && ctx.role !== "OWNER") throw E.forbidden("Only owners can change admin or owner roles.");
+    if (target.role === "OWNER" && body.role !== "OWNER" && (await ownerCount(ctx.workspace.id)) <= 1) {
+      throw E.invalid("A workspace needs at least one owner. Promote someone else first.");
+    }
+    data.role = body.role;
   }
-
-  const updated = await prisma.membership.update({
-    where: { id: membership.id },
-    data: {
-      ...(parsed.data.role ? { role: parsed.data.role } : {}),
-      ...(parsed.data.team !== undefined ? { team: parsed.data.team } : {}),
-    },
-    include: { user: { select: { id: true, name: true, email: true } } },
-  });
-  return ok({ member: updated });
+  if (body.teamId !== undefined) {
+    if (body.teamId && !(await prisma.team.findFirst({ where: { id: body.teamId, workspaceId: ctx.workspace.id } }))) throw E.invalid("Team not found.");
+    data.teamId = body.teamId;
+  }
+  await prisma.workspaceMember.update({ where: { id: target.id }, data });
+  if (data.role) {
+    await audit({ workspaceId: ctx.workspace.id, actorId: ctx.user.id, action: "member.role_changed", targetType: "member", targetId: target.id, metadata: { from: target.role, to: data.role }, ip: clientIp(req) });
+  }
+  return ok({ updated: true });
 });
 
-export const DELETE = handler(async (req: Request, { params }: Params) => {
-  const ctx = await requireOrgContext(req);
-  if (!ctx) return errors.unauthorized();
-  if (!requireAdmin(ctx)) return errors.forbidden();
-  const { id } = await params;
-
-  const membership = await prisma.membership.findFirst({
-    where: { id, organizationId: ctx.org.id },
-  });
-  if (!membership) return errors.notFound("Member");
-
-  if (membership.role === "ADMIN") {
-    const adminCount = await prisma.membership.count({
-      where: { organizationId: ctx.org.id, role: "ADMIN" },
-    });
-    if (adminCount <= 1) return errors.conflict("Cannot remove the last admin");
+export const DELETE = route(async (req, { params }: P) => {
+  const ctx = await requireWorkspace(req);
+  const target = await prisma.workspaceMember.findFirst({ where: { id: params.id, workspaceId: ctx.workspace.id }, include: { user: { select: { email: true } } } });
+  if (!target) throw E.notFound("Member");
+  const self = target.userId === ctx.user.id;
+  // Anyone can leave; removing others needs admin (and owner to remove admins/owners).
+  if (!self) {
+    if (ctx.role !== "OWNER" && ctx.role !== "ADMIN") throw E.forbidden();
+    if ((target.role === "OWNER" || target.role === "ADMIN") && ctx.role !== "OWNER") throw E.forbidden("Only owners can remove admins or owners.");
   }
-  if (membership.userId === ctx.user.id) return errors.conflict("Use the org switcher to leave an organization");
-
-  await prisma.membership.delete({ where: { id: membership.id } });
+  if (target.role === "OWNER" && (await ownerCount(ctx.workspace.id)) <= 1) throw E.invalid("The last owner can't leave. Transfer ownership or delete the workspace.");
+  await prisma.workspaceMember.delete({ where: { id: target.id } });
+  await audit({ workspaceId: ctx.workspace.id, actorId: ctx.user.id, action: "member.removed", targetType: "member", targetId: target.id, metadata: { email: target.user.email, self }, ip: clientIp(req) });
   return ok({ removed: true });
 });
 

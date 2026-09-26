@@ -1,13 +1,23 @@
 import { redirect } from "next/navigation";
-import { getCurrentUser } from "@/lib/auth";
-import { DashboardShell } from "./shell";
+import { cookies } from "next/headers";
+import { getServerAuth } from "@/server/auth/server";
+import { buildMe } from "@/server/workspaces";
+import { WORKSPACE_COOKIE } from "@/server/auth/session";
+import { MeProvider } from "@/components/shell/MeProvider";
+import { AppShell } from "@/components/shell/AppShell";
 
-export default function DashboardLayout({ children }: { children: React.ReactNode }) {
-  return <AuthGate>{children}</AuthGate>;
-}
+export const dynamic = "force-dynamic";
+export const metadata = { title: { default: "Dashboard", template: "%s · ObserveMetrics" }, robots: { index: false } };
 
-async function AuthGate({ children }: { children: React.ReactNode }) {
-  const user = await getCurrentUser();
-  if (!user) redirect("/login?next=/dashboard");
-  return <DashboardShell userName={user.name ?? user.email}>{children}</DashboardShell>;
+export default async function DashboardLayout({ children }: { children: React.ReactNode }) {
+  const auth = await getServerAuth();
+  if (!auth) redirect("/signin?next=/dashboard");
+  if (!auth.workspace) redirect("/onboarding");
+  if (!auth.workspace.isDemo && !auth.workspace.onboardingCompletedAt) redirect("/onboarding");
+  const me = await buildMe(auth, cookies().get(WORKSPACE_COOKIE)?.value ?? null);
+  return (
+    <MeProvider initial={me}>
+      <AppShell>{children}</AppShell>
+    </MeProvider>
+  );
 }
