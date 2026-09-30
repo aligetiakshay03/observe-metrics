@@ -31,6 +31,7 @@ jobs:
       ENCRYPTION_KEY: 3a1f0c9b8e7d6a5f4e3d2c1b0a9f8e7d6c5b4a3f2e1d0c9b8a7f6e5d4c3b2a19
       APP_URL: http://localhost:3100
       CRON_SECRET: ci-cron-secret-not-used-in-tests
+      TRUSTED_PROXY_HOPS: 1
 
     steps:
       - uses: actions/checkout@v4
@@ -46,5 +47,6 @@ jobs:
         run: PGPASSWORD=postgres psql -h localhost -U postgres -c "CREATE DATABASE observe_metrics_test"
       - run: npx prisma migrate deploy
       - run: npm run typecheck
+      - run: npm run lint
       - run: npm test
       - run: npm run build

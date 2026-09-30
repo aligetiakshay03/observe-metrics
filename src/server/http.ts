@@ -2,7 +2,7 @@ import "server-only";
 import { NextResponse } from "next/server";
 import type { z, ZodTypeAny } from "zod";
 import { logger } from "./log";
-import { assertProductionConfig } from "./env";
+import { assertProductionConfig, trustedProxyHops } from "./env";
 
 const log = logger("api");
 
@@ -70,6 +70,44 @@ export function errorResponse(err: ApiError) {
 }
 
 const MAX_BODY_BYTES = 1_000_000;
+const TOO_LARGE = "too-large";
+
+class BodyTooLarge extends Error {
+  constructor() {
+    super(TOO_LARGE);
+    this.name = "BodyTooLarge";
+  }
+}
+
+/**
+ * Buffer a body, aborting as soon as the byte count passes `max`. A
+ * Content-Length precheck alone is not enough: chunked requests omit it, and
+ * `req.text()` would buffer the whole stream before any size test could run.
+ */
+async function readBodyCapped(req: Request, max: number): Promise<string> {
+  const stream = req.body;
+  if (!stream) {
+    const text = await req.text();
+    if (Buffer.byteLength(text, "utf8") > max) throw new BodyTooLarge();
+    return text;
+  }
+  const reader = stream.getReader();
+  const chunks: Buffer[] = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+      total += value.byteLength;
+      if (total > max) throw new BodyTooLarge();
+      chunks.push(Buffer.from(value.buffer, value.byteOffset, value.byteLength));
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  return Buffer.concat(chunks).toString("utf8");
+}
 
 /** Parse a JSON body against a zod schema, mapping issues to field errors. */
 export async function parseBody<S extends ZodTypeAny>(req: Request, schema: S): Promise<z.output<S>> {
@@ -77,11 +115,10 @@ export async function parseBody<S extends ZodTypeAny>(req: Request, schema: S): 
   if (declared > MAX_BODY_BYTES) throw E.invalid("Request body is too large (max 1 MB).");
   let raw: unknown;
   try {
-    const text = await req.text();
-    if (text.length > MAX_BODY_BYTES) throw new Error("too large");
-    raw = JSON.parse(text);
+    raw = JSON.parse(await readBodyCapped(req, MAX_BODY_BYTES));
   } catch (e) {
-    throw E.invalid((e as Error).message === "too large" ? "Request body is too large (max 1 MB)." : "Request body must be valid JSON.");
+    const tooLarge = e instanceof BodyTooLarge || (e as Error).message === TOO_LARGE;
+    throw E.invalid(tooLarge ? "Request body is too large (max 1 MB)." : "Request body must be valid JSON.");
   }
   return parseWith(schema, raw);
 }
@@ -143,26 +180,31 @@ export function route<C = any>(fn: Handler<C>): Handler<C> {
 }
 
 /**
- * Client IP for rate limiting and audit logs. Uses the right-most
- * X-Forwarded-For entry — the one appended by the proxy in front of the app —
- * because left-most entries are client-controlled and trivially spoofed.
- * Set TRUSTED_PROXY_HOPS if more than one proxy sits in front of the app.
+ * Client IP for rate limiting and audit logs. Skips TRUSTED_PROXY_HOPS entries
+ * from the right of X-Forwarded-For, because those are the ones the trusted
+ * proxies appended; everything to the left is client-controlled and trivially
+ * spoofed. An unparseable hop count resolves to 1 rather than to the left-most
+ * entry, so a bad setting can never widen the spoofable range.
  */
 export function clientIp(req: Request): string {
-  const hops = Math.max(1, Number(process.env.TRUSTED_PROXY_HOPS ?? 1));
   const chain = (req.headers.get("x-forwarded-for") ?? "")
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean);
-  return chain[chain.length - hops] ?? chain[0] ?? req.headers.get("x-real-ip") ?? "unknown";
+  if (!chain.length) return req.headers.get("x-real-ip") ?? "unknown";
+  const idx = chain.length - trustedProxyHops();
+  // Fewer entries than configured hops means an assumption is wrong; the
+  // left-most entry is then the only candidate left.
+  return (idx >= 0 ? chain[idx] : chain[0])!;
 }
 
-export function csvResponse(csv: string, filename: string) {
+export function csvResponse(csv: string, filename: string, headers: Record<string, string> = {}) {
   return new Response(csv, {
     headers: {
       "Content-Type": "text/csv; charset=utf-8",
       "Content-Disposition": `attachment; filename="${filename.replace(/[^A-Za-z0-9._-]/g, "_")}"`,
       "Cache-Control": "no-store",
+      ...headers,
     },
   });
 }

@@ -248,6 +248,66 @@ describe("ingestion API", () => {
     const invalid = await call(ing, events.POST, "/api/v1/events", { body: { provider: "openai", model: "x", input_tokens: -5, output_tokens: 1, extra: 1 }, headers: { authorization: `Bearer ${raw}` } });
     expect(invalid.status).toBe(400);
   });
+
+  it("scopes request_id idempotency per key, provider and model", async () => {
+    const u = await newWorkspaceUser("dedupe");
+    const mkKey = async (name: string) => {
+      const r = await call(u.c, ingestKeys.POST, "/api/v1/ingestion-keys", { body: { name } });
+      expect(r.status).toBe(201);
+      return r.json!.data.key as string;
+    };
+    const a = await mkKey("service-a");
+    const b = await mkKey("service-b");
+    const ing = new Client();
+    const post = (key: string, body: unknown) =>
+      call(ing, events.POST, "/api/v1/events", { body, headers: { authorization: `Bearer ${key}` } });
+
+    const ev = (over: Record<string, unknown> = {}) => ({
+      provider: "openai", model: "gpt-4o", application: "svc",
+      input_tokens: 100, output_tokens: 10, request_id: "req_1", ...over,
+    });
+
+    // Two different services may reuse the same short request_id.
+    expect((await post(a, ev({ application: "svc-a" }))).json!.data).toEqual({ accepted: 1, duplicates: 0 });
+    expect((await post(b, ev({ application: "svc-b" }))).json!.data).toEqual({ accepted: 1, duplicates: 0 });
+
+    // One service reusing a request_id across providers is also fine.
+    expect((await post(a, ev({ provider: "anthropic", model: "claude-sonnet-4-6", application: "svc-a" }))).json!.data).toEqual({ accepted: 1, duplicates: 0 });
+
+    // A genuine retry of the identical call is still idempotent.
+    expect((await post(a, ev({ application: "svc-a" }))).json!.data).toEqual({ accepted: 0, duplicates: 1 });
+
+    // And so is a retry under a fresh request_id.
+    expect((await post(a, ev({ request_id: "x", application: "svc-b" }))).json!.data).toEqual({ accepted: 1, duplicates: 0 });
+    expect((await post(a, ev({ request_id: "x", application: "svc-b" }))).json!.data).toEqual({ accepted: 0, duplicates: 1 });
+
+    const total = await prisma.usageEvent.aggregate({ where: { workspaceId: u.wsId }, _sum: { requestCount: true } });
+    expect(total._sum.requestCount).toBe(4);
+    expect(await prisma.application.count({ where: { workspaceId: u.wsId } })).toBe(2);
+  });
+
+  it("still de-duplicates retries of events stored under the pre-namespacing key", async () => {
+    const u = await newWorkspaceUser("legacy");
+    const r = await call(u.c, ingestKeys.POST, "/api/v1/ingestion-keys", { body: { name: "legacy" } });
+    const key = r.json!.data.key as string;
+
+    // Simulate a row written before the dedupe key was namespaced.
+    const legacyKey = "req:" + sha256("legacy-1").slice(0, 40);
+    await prisma.usageEvent.create({
+      data: {
+        workspaceId: u.wsId, source: "INGEST_API", provider: "openai", model: "gpt-4o",
+        applicationId: "", teamId: "", requestCount: 1, errorCount: 0,
+        inputTokens: 100n, outputTokens: 10n, cachedTokens: 0n, costUsd: 0.0003,
+        costSource: "CALCULATED", latencyMsSum: null, status: "success", errorCode: null,
+        timestamp: new Date(), requestId: "legacy-1", promptHash: null, dedupeKey: legacyKey,
+      },
+    });
+
+    const body = { provider: "openai", model: "gpt-4o", input_tokens: 100, output_tokens: 10, request_id: "legacy-1" };
+    const res = await call(new Client(), events.POST, "/api/v1/events", { body, headers: { authorization: `Bearer ${key}` } });
+    expect(res.json!.data).toEqual({ accepted: 0, duplicates: 1 });
+    expect(await prisma.usageEvent.count({ where: { workspaceId: u.wsId } })).toBe(1);
+  });
 });
 
 describe("provider connections & sync", () => {
@@ -375,5 +435,98 @@ describe("demo workspace, insights and exports", () => {
     expect(r.headers.get("content-type")).toContain("text/csv");
     expect(r.text).toContain(`"'=HYPERLINK(""http://x"")"`);
     expect((await call(u.c, exportsRoute.GET, "/api/v1/exports/nope", {}, { dataset: "nope" })).status).toBe(404);
+  });
+
+  it("reports export row counts and flags a truncated events export", async () => {
+    const u = await newWorkspaceUser("export-cap");
+    const day = new Date(Date.UTC(2024, 0, 2));
+    await prisma.dailyUsage.create({
+      data: { workspaceId: u.wsId, day, provider: "openai", model: "gpt-4o", requests: 1, inputTokens: 1n, outputTokens: 1n, costUsd: 0.01 },
+    });
+    const small = await call(u.c, exportsRoute.GET, "/api/v1/exports/events?from=2024-01-01&to=2024-01-31", {}, { dataset: "events" });
+    expect(small.status).toBe(200);
+    expect(small.headers.get("x-export-truncated")).toBe("false");
+    expect(Number(small.headers.get("x-export-rows"))).toBe(0);
+    expect(Number(small.headers.get("x-export-limit"))).toBeGreaterThan(0);
+
+    // One row past the cap proves the boundary is detected, not assumed.
+    const cap = Number(small.headers.get("x-export-limit"));
+    await prisma.usageEvent.createMany({
+      data: Array.from({ length: cap + 1 }, (_, i) => ({
+        workspaceId: u.wsId,
+        source: "INGEST_API" as const,
+        provider: "openai",
+        model: "gpt-4o",
+        timestamp: day,
+        inputTokens: 1n,
+        outputTokens: 1n,
+        costUsd: 0.001,
+        costSource: "CALCULATED",
+        dedupeKey: `cap:${i}`,
+      })),
+    });
+    const capped = await call(u.c, exportsRoute.GET, "/api/v1/exports/events?from=2024-01-01&to=2024-01-31", {}, { dataset: "events" });
+    expect(capped.headers.get("x-export-truncated")).toBe("true");
+    expect(Number(capped.headers.get("x-export-rows"))).toBe(cap);
+    // Every kept row is present; the cap is a real cut, not a dropped file.
+    expect(capped.text.trim().split("\r\n").length).toBe(cap + 1);
+  });
+
+  it("flags a truncated five-dimension aggregate export instead of loading it all", async () => {
+    const u = await newWorkspaceUser("aggregate-cap");
+    const day = new Date(Date.UTC(2024, 1, 5));
+    const baseline = await call(u.c, exportsRoute.GET, "/api/v1/exports/usage?from=2024-02-01&to=2024-02-29", {}, { dataset: "usage" });
+    const limit = Number(baseline.headers.get("x-export-limit"));
+    expect(limit).toBeGreaterThan(0);
+    expect(baseline.headers.get("x-export-truncated")).toBe("false");
+
+    // A distinct model per row makes every group unique, so a group-by over
+    // five dimensions exceeds the cap.
+    await prisma.dailyUsage.createMany({
+      data: Array.from({ length: limit + 5 }, (_, i) => ({
+        workspaceId: u.wsId,
+        day,
+        provider: "openai",
+        model: `m-${i}`,
+        requests: 1,
+        costUsd: 0.01,
+      })),
+    });
+    const capped = await call(u.c, exportsRoute.GET, "/api/v1/exports/usage?from=2024-02-01&to=2024-02-29", {}, { dataset: "usage" });
+    expect(capped.status).toBe(200);
+    expect(capped.headers.get("x-export-truncated")).toBe("true");
+    expect(Number(capped.headers.get("x-export-rows"))).toBe(limit);
+  });
+
+  it("scopes budget spend by team and application", async () => {
+    const u = await newWorkspaceUser("budget-scope");
+    const now = new Date();
+    const day = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 5));
+    const teamA = await prisma.team.create({ data: { workspaceId: u.wsId, name: "A", slug: "a" } });
+    const teamB = await prisma.team.create({ data: { workspaceId: u.wsId, name: "B", slug: "b" } });
+    const appX = await prisma.application.create({ data: { workspaceId: u.wsId, name: "X", slug: "x", teamId: teamA.id } });
+    await prisma.dailyUsage.createMany({
+      data: [
+        { workspaceId: u.wsId, day, provider: "openai", model: "gpt-4o", teamId: teamA.id, applicationId: appX.id, requests: 1, costUsd: 10 },
+        { workspaceId: u.wsId, day, provider: "openai", model: "gpt-4o", teamId: teamB.id, applicationId: "", requests: 1, costUsd: 20 },
+        // A different day inside the same month, for the window arithmetic.
+        { workspaceId: u.wsId, day: new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 20)), provider: "openai", model: "gpt-4o", teamId: teamA.id, applicationId: "", requests: 1, costUsd: 5 },
+      ],
+    });
+    await prisma.budget.createMany({
+      data: [
+        { workspaceId: u.wsId, name: "all", scope: "WORKSPACE", amountUsd: 100, thresholds: [80, 100] },
+        { workspaceId: u.wsId, name: "teamA", scope: "TEAM", teamId: teamA.id, amountUsd: 100, thresholds: [80, 100] },
+        { workspaceId: u.wsId, name: "appX", scope: "APPLICATION", applicationId: appX.id, amountUsd: 100, thresholds: [80, 100] },
+      ],
+    });
+
+    const r = await call(u.c, budgets.GET, "/api/v1/budgets", {}, undefined);
+    expect(r.status).toBe(200);
+    const byName = new Map((r.json!.data.budgets as { name: string; spentUsd: number; status: string }[]).map((b) => [b.name, b]));
+    expect(byName.get("all")!.spentUsd).toBe(35);
+    expect(byName.get("teamA")!.spentUsd).toBe(15);
+    expect(byName.get("appX")!.spentUsd).toBe(10);
+    expect(byName.get("all")!.status).toBe("ok");
   });
 });

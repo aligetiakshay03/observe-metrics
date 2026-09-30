@@ -138,7 +138,7 @@ export function DeleteEntityDialog({ kind, open, onClose, id, name }: { kind: Ki
       danger
       title={`Delete ${name}?`}
       confirmLabel={`Delete ${LABEL[kind]}`}
-      body={`Historical usage is kept but will show as unattributed. Budgets scoped to this ${LABEL[kind]} will stop tracking.`}
+      body={`Recorded usage is not deleted, but it keeps this ${LABEL[kind]}'s internal id and shows up unnamed — not as unattributed. If events still name it, a new ${LABEL[kind]} is created and the history splits across two. Budgets scoped here stop tracking.`}
     />
   );
 }

@@ -15,7 +15,7 @@ export default function SecuritySettings() {
   if (me.user.isGuest) {
     return (
       <div className="space-y-4">
-        <Notice tone="warning" title="Guest session">You're exploring the demo without an account. Create a free account to set a password and manage sessions.</Notice>
+        <Notice tone="warning" title="Guest session">You&rsquo;re exploring the demo without an account. Create a free account to set a password and manage sessions.</Notice>
         <ProtectionCard />
       </div>
     );

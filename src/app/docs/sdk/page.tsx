@@ -17,7 +17,7 @@ const FIELDS: [string, string, string, string][] = [
   ["status", '"success" | "error"', "No", 'Defaults to "success".'],
   ["error_code", "string", "No", "Provider or HTTP error code, e.g. rate_limit_exceeded or 529."],
   ["timestamp", "ISO 8601", "No", "When the request happened, with timezone offset. Must be within the last 35 days. Defaults to now."],
-  ["request_id", "string", "No", "Your unique id for the call. Events with a request_id already seen are ignored — safe retries."],
+  ["request_id", "string", "No", "Your unique id for the call. Retries of the same key, provider and model are ignored — safe to retry. Reused across different keys or models it counts as a separate call."],
   ["prompt_hash", "string", "No", "Hash of the prompt (8–128 chars of A–Z, a–z, 0–9, _ - :). Enables duplicate-prompt detection. Hash in your app; never send prompts."],
   ["cost_usd", "number", "No", "Cost you already know (e.g. from the provider response). Stored as provider reported; otherwise cost is estimated from list prices."],
 ];
@@ -99,8 +99,8 @@ export default function SdkDocs() {
               <code>202</code>
             </td>
             <td className="whitespace-normal">
-              Accepted. Body: <code>{`{"ok": true, "data": {"accepted": 1, "duplicates": 0}}`}</code>. <code>duplicates</code> counts events skipped because their{" "}
-              <code>request_id</code> was already recorded.
+              Accepted. Body: <code>{`{"ok": true, "data": {"accepted": 1, "duplicates": 0}}`}</code>.               <code>duplicates</code> counts events skipped because the same <code>request_id</code> was already
+              recorded for that key, provider and model.
             </td>
           </tr>
           <tr>
@@ -222,7 +222,10 @@ report(provider="openai", model="gpt-4.1", application="sales-assistant", team="
       <h2>Good practice</h2>
       <ul>
         <li>Call the ingestion API from your server, never from a browser — the ingestion key is a secret.</li>
-        <li>Always set <code>request_id</code> so retries don&apos;t create duplicates.</li>
+        <li>
+          Always set <code>request_id</code> so retries don&apos;t create duplicates. Scoped per ingestion key, provider
+          and model, so separate services can reuse the same id.
+        </li>
         <li>Use stable, low-cardinality slugs for <code>application</code> and <code>team</code>.</li>
         <li>
           Send the model id your provider returns; unknown models are stored and shown as unpriced until the pricing catalog knows them (or you send <code>cost_usd</code>).

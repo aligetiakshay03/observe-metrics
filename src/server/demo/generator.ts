@@ -157,20 +157,35 @@ const noise = (seed: string, amp: number) => 1 + (rng(seed)() * 2 - 1) * amp;
 
 // ── injected anomalies (d = days ago; 0 = today) ──
 
+/**
+ * The Mistral incident, 3 days ending 5 days ago.
+ *
+ * Deliberately 3 days rather than 1: weekends run at roughly a third of
+ * weekday volume, so an incident pinned to a single day can fall below the
+ * provider-outage rule's 300-request significance floor and silently not
+ * appear on the demo. Any 3 consecutive days contain a weekday, so the insight
+ * is produced whatever day the demo is seeded on. Shared by the error burst
+ * and the individual-request burst so the two cannot drift apart.
+ */
+const isMistralIncident = (d: number) => d >= 3 && d <= 5;
+
 const anomalies = {
   /** A conversation-history change shipped 8 days ago makes support requests carry more context. */
   supportContext: (app: string, model: string, d: number) => (app === "customer-support-agent" && model.startsWith("claude-sonnet") && d <= 7 ? 1.36 : 1),
   supportVolume: (app: string, d: number) => (app === "customer-support-agent" && d <= 7 ? 1.08 : 1),
   /** GPT-4.1 slowed down for the last 6 days. */
   latency: (model: string, d: number) => (model === "gpt-4.1" && d <= 6 ? 1.42 : 1),
-  /** Mistral incident four days ago; Gemini Flash rate limiting over the last 2 days. */
+  /**
+   * Mistral incident (see isMistralIncident); Gemini Flash rate limiting over
+   * the last 2 days.
+   */
   errorRate: (provider: string, model: string, d: number, base: number) => {
-    if (provider === "mistral" && d === 4) return 0.091;
+    if (provider === "mistral" && isMistralIncident(d)) return 0.091;
     if (model === "gemini-2.5-flash" && d <= 2) return 0.046;
     return base;
   },
   errorCode: (provider: string, model: string, d: number, base: string) => {
-    if (provider === "mistral" && d === 4) return "service_unavailable";
+    if (provider === "mistral" && isMistralIncident(d)) return "service_unavailable";
     if (model === "gemini-2.5-flash" && d <= 2) return "rate_limit_exceeded";
     return base;
   },
@@ -312,7 +327,7 @@ function individualEvents(
     count = Math.round(170 * partial);
     duplicates = true;
   } else if (app.slug === "customer-support-agent" && model.startsWith("claude-sonnet")) count = Math.round(45 * partial);
-  else if (model === "gemini-2.5-flash" || model === "gpt-4.1" || (m.provider === "mistral" && d === 4)) count = Math.round(25 * partial);
+  else if (model === "gemini-2.5-flash" || model === "gpt-4.1" || (m.provider === "mistral" && isMistralIncident(d))) count = Math.round(25 * partial);
   count = Math.min(count, Math.floor(requests * 0.5));
   const out: DemoEvent[] = [];
   const r = rng(`ind:${app.slug}:${model}:${d}`);

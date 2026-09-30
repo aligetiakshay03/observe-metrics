@@ -87,10 +87,19 @@ function toAgg(r: RawRow): Agg {
   };
 }
 
-/** Aggregate daily_usage for the workspace, grouped by zero or more dimensions. */
-export async function aggregate(workspaceId: string, f: Filters, dims: Dim[] = []): Promise<AggRow[]> {
+/**
+ * Aggregate daily_usage for the workspace, grouped by zero or more dimensions.
+ *
+ * `limit` caps the rows in SQL rather than in JS, so a wide group-by (the CSV
+ * exports group by five dimensions) cannot exhaust memory. It returns up to
+ * `limit + 1` rows so callers can detect that the cap was hit, ordered by the
+ * first dimension descending so the retained rows are a deterministic,
+ * most-recent-first slice rather than an arbitrary one.
+ */
+export async function aggregate(workspaceId: string, f: Filters, dims: Dim[] = [], limit?: number): Promise<AggRow[]> {
   const select = dims.map((d) => Prisma.sql`${DIM_SQL[d]} AS "k_${Prisma.raw(d)}"`);
   const groupBy = dims.length ? Prisma.sql`GROUP BY ${Prisma.join(dims.map((_, i) => Prisma.raw(String(i + 1))))}` : Prisma.empty;
+  const capped = limit !== undefined && dims.length ? Prisma.sql`ORDER BY 1 DESC LIMIT ${limit + 1}` : Prisma.empty;
   const rows = await prisma.$queryRaw<RawRow[]>`
     SELECT ${select.length ? Prisma.sql`${Prisma.join(select)},` : Prisma.empty}
       COALESCE(SUM("requests"),0) AS requests, COALESCE(SUM("errors"),0) AS errors,
@@ -99,7 +108,8 @@ export async function aggregate(workspaceId: string, f: Filters, dims: Dim[] = [
       COALESCE(SUM("latencyMsSum"),0)::float8 AS latsum, COALESCE(SUM("latencyCount"),0) AS latcount
     FROM "daily_usage"
     WHERE ${where(workspaceId, f)}
-    ${groupBy}`;
+    ${groupBy}
+    ${capped}`;
   return rows.map((r) => {
     const keys: Partial<Record<Dim, string>> = {};
     for (const d of dims) keys[d] = String(r[`k_${d}`] ?? "");

@@ -196,8 +196,17 @@ export function ExportButton({ datasets }: { datasets: string[] }) {
   const run = async (ds: string) => {
     setBusy(ds);
     try {
-      await downloadExport(ds, query);
-      toast({ tone: "success", title: "Export downloaded", body: `${DATASET_LABEL[ds] ?? ds} CSV for the selected range.` });
+      const { rows, truncated, limit } = await downloadExport(ds, query);
+      const label = DATASET_LABEL[ds] ?? ds;
+      if (truncated) {
+        toast({
+          tone: "info",
+          title: "Export downloaded, but incomplete",
+          body: `${label} hit the ${(limit ?? 0).toLocaleString()}-row limit, so the file has the ${rows.toLocaleString()} most recent rows. Narrow the date range or add filters to get everything.`,
+        });
+      } else {
+        toast({ tone: "success", title: "Export downloaded", body: `${label} CSV · ${rows.toLocaleString()} rows for the selected range.` });
+      }
     } catch (e) {
       toast({ tone: "error", title: "Export failed", body: (e as Error).message });
     } finally {

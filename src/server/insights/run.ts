@@ -160,10 +160,41 @@ async function budgetAlerts(workspaceId: string, ctx: RuleContext, now: Date) {
   }
 }
 
-/** Refresh every workspace with recent usage (cron tick). */
-export async function refreshAllActiveWorkspaces(now = new Date()) {
+/** Workspaces refreshed at once; keeps one slow tenant from stalling the tick. */
+const REFRESH_CONCURRENCY = 4;
+
+const g = globalThis as unknown as { __omInsightRefresh?: Promise<number> };
+
+/**
+ * Refresh every workspace with recent usage (cron tick).
+ *
+ * Concurrent ticks are coalesced rather than queued: re-running the rules for
+ * a workspace that is already mid-refresh produces the same upserted insights
+ * and alerts for a great deal of database work. This guard is in-process, so
+ * with multiple replicas a distributed lock (Redis is already required in
+ * production) is the next step if a tick ever overlaps across nodes.
+ */
+export function refreshAllActiveWorkspaces(now = new Date()): Promise<number> {
+  if (g.__omInsightRefresh) return g.__omInsightRefresh;
+  const task = refreshActiveWorkspaces(now);
+  g.__omInsightRefresh = task;
+  const clear = () => {
+    if (g.__omInsightRefresh === task) g.__omInsightRefresh = undefined;
+  };
+  task.then(clear, clear);
+  return task;
+}
+
+async function refreshActiveWorkspaces(now: Date): Promise<number> {
   const since = new Date(addDays(toDay(now), -2) + "T00:00:00Z");
-  const active = await prisma.dailyUsage.findMany({ where: { day: { gte: since } }, distinct: ["workspaceId"], select: { workspaceId: true } });
-  for (const { workspaceId } of active) await refreshWorkspaceIntelligence(workspaceId, now);
+  // One row per workspace via a grouped read served by (workspaceId, day),
+  // rather than a distinct scan of every usage row in the window.
+  const active = await prisma.$queryRaw<{ workspaceId: string }[]>`
+    SELECT "workspaceId" FROM "daily_usage" WHERE "day" >= ${since} GROUP BY "workspaceId"`;
+  if (!active.length) return 0;
+  log.info(`refreshing ${active.length} workspaces`);
+  for (let i = 0; i < active.length; i += REFRESH_CONCURRENCY) {
+    await Promise.all(active.slice(i, i + REFRESH_CONCURRENCY).map(({ workspaceId }) => refreshWorkspaceIntelligence(workspaceId, now)));
+  }
   return active.length;
 }
