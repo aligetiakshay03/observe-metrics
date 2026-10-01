@@ -1,15 +1,29 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import crypto from "crypto";
 import { __resetSecretKeysForTests, maskedDisplay, maskTail, openSecret, sealSecret } from "../src/server/secrets";
 import { redact } from "../src/server/log";
 import { calculateCost, cheaperAlternatives, normalizeModelId, normalizeProviderId, resolvePrice } from "../src/server/pricing/service";
-import { addDays, parseFilters, previousPeriod } from "../src/server/analytics/filters";
+import { addDays, parseFilters, previousPeriod, toDay } from "../src/server/analytics/filters";
 import { passwordSchema } from "../src/server/auth/password";
 import { OpenAIAdapter } from "../src/server/providers/openai";
 import { AnthropicAdapter } from "../src/server/providers/anthropic";
 import { GoogleAdapter } from "../src/server/providers/google";
-import { runRules, type DayRow, type RuleContext } from "../src/server/insights/rules";
+import { providerOutages, runRules, type DayRow, type RuleContext } from "../src/server/insights/rules";
 import { DEMO_TARGETS, generateDemoDataset } from "../src/server/demo/generator";
 import { fmtChange, fmtCompact, fmtMs, prettyModel } from "../src/lib/format";
+
+/**
+ * Produces a legacy `0_init` ciphertext (iv:tag:ct, no AAD) sealed with the
+ * dev fallback key, i.e. the shape an attacker can forge because the key is a
+ * hash of a public constant.
+ */
+function sealWithDevKey(plaintext: string): string {
+  const key = crypto.createHash("sha256").update("om-dev:" + (process.env.JWT_SECRET ?? "dev-only")).digest();
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
+  const enc = Buffer.concat([cipher.update(plaintext, "utf8"), cipher.final()]);
+  return [iv.toString("hex"), cipher.getAuthTag().toString("hex"), enc.toString("hex")].join(":");
+}
 
 describe("secrets", () => {
   it("round-trips and binds ciphertext to the workspace", () => {
@@ -48,6 +62,44 @@ describe("secrets", () => {
   it("masks keys and service-account JSON", () => {
     expect(maskedDisplay(maskTail("sk-ant-admin01-xyzABCD"))).toBe("••••••••••••ABCD");
     expect(maskTail(JSON.stringify({ private_key_id: "abc123ff", private_key: "-----BEGIN" }))).toBe("23ff");
+  });
+
+  it("never tries the public dev-derived key against a legacy secret in production", () => {
+    const jwt = process.env.JWT_SECRET;
+    const key = process.env.ENCRYPTION_KEY!;
+    // A legacy 0_init secret sealed with the dev fallback key: a value an
+    // attacker can derive, since the key is a hash of a public constant.
+    const legacy = sealWithDevKey("sk-ant-legacy-plaintext-value");
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("JWT_SECRET", "a-guessable-jwt-secret");
+    vi.stubEnv("ENCRYPTION_KEY", "b".repeat(64));
+    try {
+      __resetSecretKeysForTests();
+      expect(() => openSecret(legacy, "ws_a")).toThrow();
+    } finally {
+      if (jwt !== undefined) process.env.JWT_SECRET = jwt;
+      else delete process.env.JWT_SECRET;
+      process.env.ENCRYPTION_KEY = key;
+      __resetSecretKeysForTests();
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("still reads legacy secrets in development", () => {
+    const jwt = process.env.JWT_SECRET;
+    const key = process.env.ENCRYPTION_KEY!;
+    try {
+      const legacy = sealWithDevKey("sk-ant-legacy-dev-value");
+      delete process.env.ENCRYPTION_KEY;
+      __resetSecretKeysForTests();
+      expect(openSecret(legacy, "ws_a")).toBe("sk-ant-legacy-dev-value");
+    } finally {
+      if (jwt === undefined) delete process.env.JWT_SECRET;
+      else process.env.JWT_SECRET = jwt;
+      // Restore: later tests assert on production config validation.
+      process.env.ENCRYPTION_KEY = key;
+      __resetSecretKeysForTests();
+    }
   });
 });
 
@@ -282,19 +334,169 @@ describe("demo dataset", () => {
       expect(e.costUsd).toBeGreaterThanOrEqual(0);
     }
   });
+
+  it("always produces a provider outage insight, whatever day it is seeded on", () => {
+    // The demo pins its Mistral incident to specific days ago. A single-day
+    // incident can land on a weekend, where volume is a third of a weekday and
+    // falls under the provider-outage rule's 300-request significance floor —
+    // so the insight would silently vanish on some dates. Sweeping a whole
+    // year catches that class of calendar-dependent bug.
+    for (let i = 0; i < 60; i++) {
+      const at = new Date(Date.UTC(2026, 0, 1) + i * 86_400_000 + 9 * 3600_000);
+      const byKey = new Map<string, DayRow>();
+      for (const e of generateDemoDataset(at).events) {
+        const day = toDay(e.timestamp);
+        const key = `${day}|${e.provider}|${e.model}|${e.app}|${e.team}`;
+        const row = byKey.get(key) ?? {
+          day,
+          provider: e.provider,
+          model: e.model,
+          applicationId: e.app,
+          teamId: e.team,
+          requests: 0,
+          errors: 0,
+          inputTokens: 0,
+          outputTokens: 0,
+          costUsd: 0,
+          latencyMsSum: 0,
+          latencyCount: 0,
+        };
+        row.requests += e.requestCount;
+        row.errors += e.errorCount;
+        byKey.set(key, row);
+      }
+      const ctx: RuleContext = {
+        today: toDay(at),
+        rows: [...byKey.values()],
+        apps: new Map(),
+        teams: new Map(),
+        duplicates: [],
+        budgets: [],
+      };
+      expect(providerOutages(ctx), `no provider outage on ${toDay(at)}`).not.toHaveLength(0);
+    }
+  });
 });
 
 describe("client IP for rate limiting", () => {
+  const withHops = (v: string | undefined, run: () => void) => {
+    const prev = process.env.TRUSTED_PROXY_HOPS;
+    if (v === undefined) delete process.env.TRUSTED_PROXY_HOPS;
+    else process.env.TRUSTED_PROXY_HOPS = v;
+    try {
+      run();
+    } finally {
+      if (prev === undefined) delete process.env.TRUSTED_PROXY_HOPS;
+      else process.env.TRUSTED_PROXY_HOPS = prev;
+    }
+  };
+
   it("uses the proxy-appended (right-most) X-Forwarded-For entry, not the spoofable left-most one", async () => {
     const { clientIp } = await import("../src/server/http");
     const req = new Request("http://x", { headers: { "x-forwarded-for": "1.2.3.4, 203.0.113.9" } });
     expect(clientIp(req)).toBe("203.0.113.9");
     expect(clientIp(new Request("http://x", { headers: { "x-forwarded-for": "198.51.100.7" } }))).toBe("198.51.100.7");
   });
+
+  it("skips one entry per configured proxy for multi-proxy deployments", async () => {
+    const { clientIp } = await import("../src/server/http");
+    // Each proxy appends the address of whoever talked to it, so a chain of
+    // N+1 entries for N proxies means the left-most is client-supplied and the
+    // real client is the second entry.
+    const two = new Request("http://x", { headers: { "x-forwarded-for": "6.6.6.6, 1.2.3.4, 10.0.0.1" } });
+    withHops("2", () => expect(clientIp(two)).toBe("1.2.3.4"));
+    withHops("1", () => expect(clientIp(two)).toBe("10.0.0.1"));
+    const three = new Request("http://x", { headers: { "x-forwarded-for": "6.6.6.6, 1.2.3.4, 10.0.0.1, 10.0.0.2" } });
+    withHops("3", () => expect(clientIp(three)).toBe("1.2.3.4"));
+  });
+
+  it("never falls back to the spoofable left-most entry when the hop count is unusable", async () => {
+    const { clientIp } = await import("../src/server/http");
+    const req = new Request("http://x", { headers: { "x-forwarded-for": "6.6.6.6, 203.0.113.9" } });
+    for (const bad of ["abc", "0", "-2", "1.5", "1e9", "  ", ""]) {
+      withHops(bad, () => {
+        // Garbage config must degrade to the safe (right-most) entry, not the
+        // attacker-controlled left-most one.
+        expect(clientIp(req)).toBe("203.0.113.9");
+      });
+    }
+  });
+
+  it("falls back to the left-most entry when the chain is shorter than the hop count", async () => {
+    const { clientIp } = await import("../src/server/http");
+    const req = new Request("http://x", { headers: { "x-forwarded-for": "203.0.113.9" } });
+    withHops("3", () => expect(clientIp(req)).toBe("203.0.113.9"));
+  });
+
+  it("validates the hop count in production config", async () => {
+    const { parseTrustedProxyHops } = await import("../src/server/env");
+    expect(parseTrustedProxyHops(undefined)).toBeNull();
+    expect(parseTrustedProxyHops("")).toBeNull();
+    expect(parseTrustedProxyHops("abc")).toBeNull();
+    expect(parseTrustedProxyHops("0")).toBeNull();
+    expect(parseTrustedProxyHops("2.5")).toBeNull();
+    expect(parseTrustedProxyHops("11")).toBeNull();
+    expect(parseTrustedProxyHops("1")).toBe(1);
+    expect(parseTrustedProxyHops("2")).toBe(2);
+  });
+
+  it("refuses to serve in production when the hop count is missing or unusable", async () => {
+    const { assertProductionConfig } = await import("../src/server/env");
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("APP_URL", "https://om.example.com");
+    vi.stubEnv("CRON_SECRET", "a-sufficiently-long-cron-secret");
+    vi.stubEnv("REDIS_URL", "redis://redis:56379");
+    try {
+      for (const bad of [undefined, "abc", "0", "1.5"]) {
+        vi.stubEnv("TRUSTED_PROXY_HOPS", bad);
+        expect(() => assertProductionConfig()).toThrow(/TRUSTED_PROXY_HOPS/);
+      }
+      for (const good of ["1", "2", "10"]) {
+        vi.stubEnv("TRUSTED_PROXY_HOPS", good);
+        expect(() => assertProductionConfig()).not.toThrow();
+      }
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("requires REDIS_URL in production, where per-process rate limits are bypassable", async () => {
+    const { assertProductionConfig } = await import("../src/server/env");
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("APP_URL", "https://om.example.com");
+    vi.stubEnv("CRON_SECRET", "a-sufficiently-long-cron-secret");
+    vi.stubEnv("TRUSTED_PROXY_HOPS", "1");
+    try {
+      vi.stubEnv("REDIS_URL", undefined);
+      expect(() => assertProductionConfig()).toThrow(/REDIS_URL/);
+      vi.stubEnv("REDIS_URL", "");
+      expect(() => assertProductionConfig()).toThrow(/REDIS_URL/);
+      vi.stubEnv("REDIS_URL", "redis://redis:56379");
+      expect(() => assertProductionConfig()).not.toThrow();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("rejects oversized JSON bodies", async () => {
     const { parseBody, ApiError } = await import("../src/server/http");
     const { z } = await import("zod");
     const big = new Request("http://x", { method: "POST", body: JSON.stringify({ a: "x".repeat(1_100_000) }) });
     await expect(parseBody(big, z.object({ a: z.string() }))).rejects.toBeInstanceOf(ApiError);
+  });
+
+  it("stops reading a chunked body with no Content-Length once it passes the cap", async () => {
+    const { parseBody, ApiError } = await import("../src/server/http");
+    const { z } = await import("zod");
+    // A ReadableStream body has no content-length, so only the streaming cap
+    // can catch it. Infinte stream: the reader must abort rather than buffer.
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        controller.enqueue(new Uint8Array(64 * 1024));
+      },
+    });
+    const chunked = new Request("http://x", { method: "POST", body: stream, duplex: "half" } as RequestInit);
+    expect(chunked.headers.get("content-length")).toBeNull();
+    await expect(parseBody(chunked, z.object({ a: z.string() }))).rejects.toBeInstanceOf(ApiError);
   });
 });

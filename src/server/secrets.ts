@@ -28,6 +28,11 @@ function parseKey(hex: string | undefined): Buffer | null {
   return null;
 }
 
+/** Stable development-only key. Never a candidate in production. */
+function devFallbackKey(): Buffer {
+  return crypto.createHash("sha256").update("om-dev:" + (process.env.JWT_SECRET ?? "dev-only")).digest();
+}
+
 function loadKeys(): KeyEntry[] {
   const primary = parseKey(process.env.ENCRYPTION_KEY);
   const keys: KeyEntry[] = [];
@@ -37,8 +42,7 @@ function loadKeys(): KeyEntry[] {
     if (process.env.NODE_ENV === "production") {
       throw new Error("ENCRYPTION_KEY must be a 64-character hex string in production");
     }
-    // Development fallback: a stable key derived from JWT_SECRET/dev constant.
-    const dev = crypto.createHash("sha256").update("om-dev:" + (process.env.JWT_SECRET ?? "dev-only")).digest();
+    const dev = devFallbackKey();
     keys.push({ id: keyId(dev), key: dev });
   }
   const previous = parseKey(process.env.ENCRYPTION_KEY_PREVIOUS);
@@ -86,8 +90,11 @@ export function openSecret(ciphertext: string, workspaceId: string): string {
   }
   // Legacy 0_init format (iv:tag:ct, no AAD). Tried against every configured key.
   if (parts.length === 3) {
-    const legacyKeys = [...keys().map((k) => k.key), crypto.createHash("sha256").update(process.env.JWT_SECRET ?? "dev-only").digest()];
-    for (const k of legacyKeys) {
+    // The dev-derived key is only ever a candidate outside production; a
+    // publicly-known constant must not be attempted against stored secrets.
+    const candidates = keys().map((k) => k.key);
+    if (process.env.NODE_ENV !== "production") candidates.push(devFallbackKey());
+    for (const k of candidates) {
       try {
         return decrypt(k, parts[0]!, parts[1]!, parts[2]!, null);
       } catch {

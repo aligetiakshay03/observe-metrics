@@ -23,16 +23,30 @@ export function toCsv(headers: string[], rows: (string | number | null | undefin
 export const EXPORT_DATASETS = ["usage", "costs", "models", "teams", "applications", "events"] as const;
 export type ExportDataset = (typeof EXPORT_DATASETS)[number];
 
+/** Hard cap on exported rows; anything beyond it is reported, never dropped silently. */
+export const EXPORT_MAX_ROWS = 50_000;
+
+export interface ExportResult {
+  csv: string;
+  filename: string;
+  rows: number;
+  truncated: boolean;
+}
+
 const r4 = (v: number) => Math.round(v * 10000) / 10000;
 
-export async function buildExport(workspaceId: string, dataset: ExportDataset, f: Filters): Promise<{ csv: string; filename: string; rows: number }> {
+export async function buildExport(workspaceId: string, dataset: ExportDataset, f: Filters): Promise<ExportResult> {
   const lookups = await getLookups(workspaceId);
   const teamName = new Map(lookups.teams.map((t) => [t.id, t.name]));
   const appName = new Map(lookups.apps.map((a) => [a.id, a.name]));
   const suffix = `${f.from}_to_${f.to}`;
 
   if (dataset === "usage" || dataset === "costs") {
-    const rows = await aggregate(workspaceId, f, ["day", "provider", "model", "team", "app"]);
+    const raw = await aggregate(workspaceId, f, ["day", "provider", "model", "team", "app"], EXPORT_MAX_ROWS);
+    // A five-dimension group-by over a long range can exceed any sane cap, so
+    // the surplus is reported rather than quietly dropped.
+    const truncated = raw.length > EXPORT_MAX_ROWS;
+    const rows = truncated ? raw.slice(0, EXPORT_MAX_ROWS) : raw;
     rows.sort((a, b) => a.keys.day!.localeCompare(b.keys.day!) || b.costUsd - a.costUsd);
     const headers =
       dataset === "usage"
@@ -44,7 +58,7 @@ export async function buildExport(workspaceId: string, dataset: ExportDataset, f
         ? [...common, r.errors, r.inputTokens, r.outputTokens, r.tokens, r.latencyMs == null ? "" : Math.round(r.latencyMs)]
         : [...common, r4(r.costUsd), r4(r.reportedCostUsd), r.reportedCostUsd >= r.costUsd * 0.99 && r.costUsd > 0 ? "provider_reported" : "calculated_estimate"];
     });
-    return { csv: toCsv(headers, data), filename: `observemetrics_${dataset}_${suffix}.csv`, rows: data.length };
+    return { csv: toCsv(headers, data), filename: `observemetrics_${dataset}_${suffix}.csv`, rows: data.length, truncated };
   }
 
   if (dataset === "models") {
@@ -65,6 +79,7 @@ export async function buildExport(workspaceId: string, dataset: ExportDataset, f
       csv: toCsv(["provider", "model", "requests", "input_tokens", "output_tokens", "cost_usd", "cost_per_request_usd", "avg_latency_ms", "error_rate_pct"], data),
       filename: `observemetrics_models_${suffix}.csv`,
       rows: data.length,
+      truncated: false,
     };
   }
 
@@ -86,10 +101,11 @@ export async function buildExport(workspaceId: string, dataset: ExportDataset, f
       csv: toCsv([dataset === "teams" ? "team" : "application", "requests", "tokens", "cost_usd", "cost_per_request_usd", "avg_latency_ms", "error_rate_pct"], data),
       filename: `observemetrics_${dataset}_${suffix}.csv`,
       rows: data.length,
+      truncated: false,
     };
   }
 
-  // events: raw normalized usage rows (capped)
+  // events: raw normalized usage rows (capped, and the cap is reported)
   const events = await prisma.usageEvent.findMany({
     where: {
       workspaceId,
@@ -100,9 +116,12 @@ export async function buildExport(workspaceId: string, dataset: ExportDataset, f
       ...(f.model ? { model: f.model } : {}),
     },
     orderBy: { timestamp: "desc" },
-    take: 50_000,
+    take: EXPORT_MAX_ROWS + 1,
   });
-  const data = events.map((e) => [
+  // One extra row tells us whether the cap was reached without a second query.
+  const truncated = events.length > EXPORT_MAX_ROWS;
+  const kept = truncated ? events.slice(0, EXPORT_MAX_ROWS) : events;
+  const data = kept.map((e) => [
     e.timestamp.toISOString(),
     e.source.toLowerCase(),
     e.provider,
@@ -128,5 +147,6 @@ export async function buildExport(workspaceId: string, dataset: ExportDataset, f
     ),
     filename: `observemetrics_events_${suffix}.csv`,
     rows: data.length,
+    truncated,
   };
 }

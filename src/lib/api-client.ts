@@ -103,8 +103,14 @@ export function clearApiCache(prefix?: string) {
   for (const k of cache.keys()) if (k.startsWith(prefix)) cache.delete(k);
 }
 
+export interface ExportResult {
+  rows: number;
+  truncated: boolean;
+  limit: number | null;
+}
+
 /** Download a CSV export via fetch so failures surface as errors, not blank tabs. */
-export async function downloadExport(dataset: string, query: string): Promise<void> {
+export async function downloadExport(dataset: string, query: string): Promise<ExportResult> {
   let res: Response;
   try {
     res = await fetch(`/api/v1/exports/${dataset}?${query}`, { credentials: "same-origin", cache: "no-store" });
@@ -131,4 +137,7 @@ export async function downloadExport(dataset: string, query: string): Promise<vo
   a.click();
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
+  const rows = Number(res.headers.get("x-export-rows") ?? 0);
+  const limitHeader = res.headers.get("x-export-limit");
+  return { rows, truncated: res.headers.get("x-export-truncated") === "true", limit: limitHeader ? Number(limitHeader) : null };
 }

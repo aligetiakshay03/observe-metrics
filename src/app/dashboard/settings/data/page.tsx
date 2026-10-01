@@ -1,7 +1,6 @@
 "use client";
 
 import { useState } from "react";
-import { useRouter } from "next/navigation";
 import { KeyRound, Plus, RotateCcw, Trash2 } from "lucide-react";
 import { api, clearApiCache, useApi } from "@/lib/api-client";
 import { fmtDateTime, fmtNumber, fmtRelative } from "@/lib/format";
@@ -88,7 +87,7 @@ function IngestionKeys() {
   return (
     <Card title="Ingestion keys" subtitle="Authenticate applications sending usage events to POST /api/v1/events.">
       {locked ? (
-        <Notice tone="warning">Ingestion keys can't be created in the demo workspace. Switch to your own workspace to instrument an application.</Notice>
+        <Notice tone="warning">Ingestion keys can&rsquo;t be created in the demo workspace. Switch to your own workspace to instrument an application.</Notice>
       ) : (
         <form onSubmit={create} className="flex flex-col gap-2 sm:flex-row sm:items-end" noValidate>
           <Field className="flex-1" label="Key name" placeholder="e.g. production-api" value={name} onChange={(e) => setName(e.target.value)} error={errors.name} maxLength={60} />
@@ -144,7 +143,7 @@ function IngestionKeys() {
             <div>
               <p className="label">Send a test event</p>
               <pre className="overflow-x-auto rounded-md border border-border bg-surface-2 p-3 font-mono text-xs leading-relaxed">{curl}</pre>
-              <p className="hint">Store the key in your application's secret manager or environment. Never ship it in client-side code.</p>
+              <p className="hint">Store the key in your application&rsquo;s secret manager or environment. Never ship it in client-side code.</p>
             </div>
           </div>
         )}
@@ -197,7 +196,6 @@ function DataSummary() {
 function DangerZone({ isDemo }: { isDemo: boolean }) {
   const { me, can } = useMe();
   const toast = useToast();
-  const router = useRouter();
   const [dialog, setDialog] = useState<"usage" | "workspace" | "reset" | null>(null);
   const [confirm, setConfirm] = useState("");
   const [busy, setBusy] = useState(false);

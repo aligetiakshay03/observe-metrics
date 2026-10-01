@@ -15,7 +15,7 @@ Free during launch — there are no plans, paywalls or billing flows.
 | Alerts & notifications | Alerts for cost anomalies, latency, errors, budgets and provider sync failures (read / resolve); per-user notification center with preferences; optional email |
 | Budgets | Workspace, team or application budgets with 80% / 100% thresholds (configurable), projections, alerts |
 | Providers | OpenAI and Anthropic (Admin keys → daily usage + provider-reported costs), Google Gemini and Mistral (key verification + models; usage via ingestion API). Common `ProviderAdapter` interface |
-| Ingestion API | `POST /api/v1/events` with workspace ingestion keys — single event or batches of 500, idempotent via `request_id` |
+| Ingestion API | `POST /api/v1/events` with workspace ingestion keys — single event or batches of 500, idempotent via `request_id` (scoped per key, provider and model) |
 | Workspaces | Multi-workspace users, roles Owner/Admin/Member/Viewer enforced server-side, invites, audit log |
 | Demo | Per-user demo workspace ("Helix Labs") with a year of coherent generated data, clearly labelled; anonymous "View demo" via short-lived guest accounts |
 | Security | AES-256-GCM credential encryption bound to the workspace, keys never returned to the browser, hashed sessions/tokens/keys, CSRF origin checks, rate limiting, CSP, CSV-injection escaping — see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#security) |
@@ -47,6 +47,7 @@ Without SMTP configured, password-reset and invitation links are printed to the 
 | `npm run worker` | Calls `/api/v1/cron/tick` every `WORKER_INTERVAL_SECONDS` (default 300) |
 | `npm test` | Unit + integration tests (uses `TEST_DATABASE_URL`, migrated automatically) |
 | `npm run typecheck` | TypeScript |
+| `npm run lint` | ESLint (`next/core-web-vitals` + `@typescript-eslint/recommended`) |
 | `npm run db:migrate` | Apply migrations (`prisma migrate deploy`) |
 
 Integration tests need an empty database: `docker exec observe-metrics-postgres psql -U postgres -c "CREATE DATABASE observe_metrics_test"`.
@@ -60,11 +61,11 @@ Integration tests need an empty database: `docker exec observe-metrics-postgres 
 | `ENCRYPTION_KEY` | prod | 64 hex chars. Encrypts provider credentials. Losing it makes stored keys unrecoverable |
 | `ENCRYPTION_KEY_PREVIOUS` | no | Old key during rotation |
 | `CRON_SECRET` | prod | Bearer secret for `/api/v1/cron/tick` (24+ chars) |
-| `REDIS_URL` | no | Shared rate limiting across instances (falls back to in-memory) |
+| `REDIS_URL` | **yes** (prod) | Shared rate limiting across instances. Without it counters are per-process, so they reset on deploy and other replicas can't see them |
 | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM` | no | Password reset, invites, alert emails |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | no | Enables "Continue with Google" (hidden otherwise) |
 | `DEMO_MODE` | no | `false` disables demo workspaces |
-| `TRUSTED_PROXY_HOPS` | no | Number of proxies appending to `X-Forwarded-For` (default 1) |
+| `TRUSTED_PROXY_HOPS` | **yes** (prod) | Number of proxies appending to `X-Forwarded-For` — count them: 1 for a single proxy, 2 for CDN + platform. Wrong values collapse rate limiting into one shared bucket or let clients spoof their IP |
 | `WORKER_INTERVAL_SECONDS` | no | Worker tick interval |
 | `TEST_DATABASE_URL` | tests | Database used by `npm test` |
 

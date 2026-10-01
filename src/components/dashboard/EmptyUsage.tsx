@@ -1,6 +1,5 @@
 "use client";
 
-import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { FlaskConical, Plug } from "lucide-react";
 import { Button, ButtonLink, EmptyState } from "../ui/primitives";
@@ -10,7 +9,6 @@ import { useMe } from "../shell/MeProvider";
 
 /** Shown when a real workspace has no usage yet: guide to connect or explore the demo. */
 export function EmptyUsage({ title = "No AI usage yet", body }: { title?: string; body?: string }) {
-  const router = useRouter();
   const toast = useToast();
   const { can } = useMe();
   const [busy, setBusy] = useState(false);

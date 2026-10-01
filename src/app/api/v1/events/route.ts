@@ -14,7 +14,7 @@ export const POST = route(async (req) => {
   await enforceRateLimit(`ingest:${key.id}`, 600, 60, "Ingestion rate limit exceeded (600 requests/minute per key).");
   const body = await parseBody(req, ingestBodySchema);
   const events = "events" in body ? body.events : [body];
-  const result = await ingestEvents(key.workspaceId, events);
+  const result = await ingestEvents(key.workspaceId, events, key.id);
   return ok(result, { status: 202 });
 });
 

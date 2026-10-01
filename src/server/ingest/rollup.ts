@@ -18,7 +18,9 @@ export async function rebuildDailyUsage(workspaceId: string, days: Iterable<stri
 
   await prisma.$transaction(
     async (tx) => {
-      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${"rollup:" + workspaceId}))`;
+      // hashtextextended gives 64 bits rather than hashtext's 32, so unrelated
+      // workspaces do not collide and serialize against each other.
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${"rollup:" + workspaceId}, 0))`;
       await tx.$executeRaw`DELETE FROM "daily_usage" WHERE "workspaceId" = ${workspaceId} AND "day" = ANY(${dayArray})`;
       await tx.$executeRaw`
         INSERT INTO "daily_usage" ("workspaceId","day","provider","model","applicationId","teamId","requests","errors",

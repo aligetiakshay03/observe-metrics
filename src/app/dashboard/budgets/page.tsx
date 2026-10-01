@@ -225,7 +225,8 @@ function BudgetDialog({ form, setForm, lookups, onSaved }: { form: FormState | n
   const toast = useToast();
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
-  useEffect(() => setErrors({}), [form?.id, !!form]);
+  const editing = !!form;
+  useEffect(() => setErrors({}), [form?.id, editing]);
   if (!form) return null;
   const up = (patch: Partial<FormState>) => setForm({ ...form, ...patch });
 

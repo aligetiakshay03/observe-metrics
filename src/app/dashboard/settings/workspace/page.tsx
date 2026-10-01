@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
 import { LogOut } from "lucide-react";
 import { api, clearApiCache, useApi } from "@/lib/api-client";
 import { fmtDate } from "@/lib/format";
@@ -21,7 +20,6 @@ export default function WorkspaceSettings() {
   const { data, error, loading, refresh } = useApi<WorkspaceData>("/api/v1/workspace");
   const { can, refresh: refreshMe, me } = useMe();
   const toast = useToast();
-  const router = useRouter();
   const [name, setName] = useState("");
   const [company, setCompany] = useState("");
   const [saving, setSaving] = useState(false);
